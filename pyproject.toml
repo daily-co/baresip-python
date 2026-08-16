@@ -30,11 +30,14 @@ dev = [
     "pytest>=8",
     "ruff>=0.5",
     "cffi>=2.0",
+    # cffi's in-place compile path needs setuptools at runtime on Python >= 3.12.
+    "setuptools>=69",
 ]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-# Enabled once the native extension exists:
+# Enabled once built wheels ship the native extension; until then the
+# extension is compiled in place with `make ext`:
 # cffi_modules = ["src/_native/build_ffi.py:ffi"]
 
 [tool.setuptools.packages.find]

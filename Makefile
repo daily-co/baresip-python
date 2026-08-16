@@ -11,7 +11,7 @@ native:
 	uv run python scripts/build_native.py --prefix .native
 
 ext:
-	@echo "error: extension build is not implemented yet" && exit 1
+	uv run python src/_native/build_ffi.py
 
 test:
 	uv run pytest tests/unit
