@@ -1,0 +1,6 @@
+[submodule "third_party/re"]
+	path = third_party/re
+	url = https://github.com/baresip/re.git
+[submodule "third_party/baresip"]
+	path = third_party/baresip
+	url = https://github.com/baresip/baresip.git
