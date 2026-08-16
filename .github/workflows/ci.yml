@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libopus-dev
+      - run: uv sync --group dev
+      - run: make native
+      - run: make ext
+      - run: make test
+      - run: make check
+
+  # macOS runs on manual dispatch only: local development already covers it
+  # daily, and macOS runners bill at 10x Linux. Move it to the push trigger
+  # when that trade-off changes.
+  macos:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install native build dependencies
+        run: brew install opus openssl@3
+      - run: uv sync --group dev
+      - run: make native
+      - run: make ext
+      - run: make test
+      - run: make check

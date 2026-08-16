@@ -1,0 +1,13 @@
+# C style for src/_native. Spaces only; width matches ruff's line-length
+# so both languages share one column limit.
+BasedOnStyle: LLVM
+IndentWidth: 4
+UseTab: Never
+ColumnLimit: 100
+# Never sort includes: libre/baresip headers are order-sensitive
+# (baresip.h requires re.h to be included before it).
+SortIncludes: Never
+PointerAlignment: Right
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: None
+BreakBeforeBraces: Linux

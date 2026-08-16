@@ -29,6 +29,7 @@ dependencies = ["cffi>=2.0"]
 dev = [
     "pytest>=8",
     "ruff>=0.5",
+    "clang-format>=19",
     "cffi>=2.0",
     # cffi's in-place compile path needs setuptools at runtime on Python >= 3.12.
     "setuptools>=69",

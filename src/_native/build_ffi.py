@@ -52,7 +52,25 @@ def _openssl_lib_dir() -> Path | None:
 ffi = FFI()
 
 ffi.cdef("""
+#define BP_CMD_PING ...
+#define BP_CMD_STOP ...
+
+#define BP_EV_PONG ...
+
 const char *bp_version(void);
+
+int  bp_init(void);
+void bp_close(void);
+
+int  bp_loop_init(void);
+int  bp_loop_run(void);
+void bp_loop_done(void);
+
+int  bp_cmd(int cmd, uint32_t handle, const char *json_args);
+
+// "Python+C" (not plain "Python") so the callback gets external linkage:
+// shim.c is a separate translation unit and must be able to call it.
+extern "Python+C" void bp_event_h(int ev, uint32_t handle, const char *json);
 """)
 
 _library_dirs: list[str] = []
@@ -76,6 +94,8 @@ else:
 
 ffi.set_source(
     "baresip._native",
+    # The entire C surface visible to Python is shim.h — never a raw
+    # libre/libbaresip header. Keep it that way.
     '#include "shim.h"',
     sources=[str(Path(__file__).parent / "shim.c")],
     include_dirs=[
