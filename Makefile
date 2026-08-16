@@ -8,7 +8,7 @@
 .PHONY: native ext test check
 
 native:
-	@echo "error: native build is not implemented yet" && exit 1
+	uv run python scripts/build_native.py --prefix .native
 
 ext:
 	@echo "error: extension build is not implemented yet" && exit 1
@@ -17,4 +17,4 @@ test:
 	uv run pytest tests/unit
 
 check:
-	@echo "error: linkage audit is not implemented yet" && exit 1
+	uv run python scripts/check_linkage.py
