@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Native build outputs
+.native/
+*.a
+*.so
+*.dylib
+src/_native/*.c.generated
+
+# OS
+.DS_Store

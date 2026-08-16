@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=69", "cffi>=2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baresip-python"
+description = "Python bindings for the baresip SIP stack — a complete, embeddable SIP user agent for Python applications"
+dynamic = ["version"]
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
+keywords = ["sip", "voip", "baresip", "telephony", "rtp"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Telecommunications Industry",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Internet Phone",
+    "Topic :: Communications :: Telephony",
+]
+dependencies = ["cffi>=2.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+    "cffi>=2.0",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+# Enabled once the native extension exists:
+# cffi_modules = ["src/_native/build_ffi.py:ffi"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+baresip = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "baresip.__version__" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+markers = [
+    "bench: integration tests requiring the local FreeSWITCH docker bench (deselected by default in CI without a bench)",
+]
