@@ -64,7 +64,7 @@ void bp_close(void);
 
 int  bp_loop_init(void);
 int  bp_loop_run(void);
-void bp_loop_done(void);
+int  bp_loop_done(void);
 
 int  bp_cmd(int cmd, uint32_t handle, const char *json_args);
 

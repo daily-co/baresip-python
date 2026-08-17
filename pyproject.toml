@@ -28,6 +28,7 @@ dependencies = ["cffi>=2.0"]
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-asyncio>=0.24",
     "ruff>=0.5",
     "clang-format>=19",
     "cffi>=2.0",
@@ -55,6 +56,7 @@ line-length = 100
 target-version = "py311"
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
 markers = [
     "bench: integration tests requiring the local FreeSWITCH docker bench (deselected by default in CI without a bench)",
 ]

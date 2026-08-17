@@ -19,3 +19,21 @@ class CommandQueueFull(BaresipError):
     back off and retry, and must not assume the rejected command had any
     effect.
     """
+
+
+class CommandTimeout(BaresipError):
+    """A command was sent but no completion arrived within the timeout.
+
+    Either the SIP thread is stalled (the runtime's watchdog will report
+    that separately) or the command's completion was lost. The command may
+    or may not have taken effect.
+    """
+
+
+class RuntimeDead(BaresipError):
+    """The SIP thread has exited and the runtime can no longer operate.
+
+    Raised on all commands pending at the time of death and on any later
+    attempt to use the runtime. There is no in-process recovery: start a
+    new process.
+    """

@@ -42,15 +42,25 @@ void bp_close(void);
  *   bp_loop_run();    re_main — blocks until a BP_CMD_STOP is processed
  *   bp_loop_done();   frees the command queue, re_thread_close
  *
- * bp_loop_done must only run after bp_loop_run has returned and every
- * bp_cmd caller has quiesced: a push into a freed queue is a use-after-
- * free. The Python runtime enforces that ordering.
+ * bp_loop_done must only run after bp_loop_run has returned. Concurrent
+ * bp_cmd callers need no coordination: an internal mutex pairs the gate
+ * check with the push, and pairs closing the gate with freeing the queue,
+ * so a push racing teardown gets ESHUTDOWN instead of touching freed
+ * memory. On top of that, each lifecycle function refuses misordered
+ * calls with a loud stderr message and an errno instead of corrupting
+ * state:
  *
- * Both int-returning functions return 0 on success, an errno otherwise.
+ *   bp_loop_init   EALREADY  queue already allocated (double init)
+ *   bp_loop_run    EINVAL    never initialized
+ *   bp_loop_run    EALREADY  loop already running
+ *   bp_loop_done   EBUSY     loop still running — freeing now would be
+ *                            the use-after-free described above
+ *
+ * All three return 0 on success, an errno otherwise.
  */
 int bp_loop_init(void);
 int bp_loop_run(void);
-void bp_loop_done(void);
+int bp_loop_done(void);
 
 /* Queue a command for the re thread. Callable from ANY thread.
  *

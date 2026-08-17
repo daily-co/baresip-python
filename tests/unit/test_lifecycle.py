@@ -26,19 +26,22 @@ native = pytest.importorskip("baresip._native")
 ffi = native.ffi
 lib = native.lib
 
-# Every event the callback delivers: (event id, handle, thread ident).
+from baresip import _events  # import requires the built extension, hence after the skip
+
+# Every event the sink receives: (event id, handle, thread ident).
 EVENTS: list[tuple[int, int, int]] = []
 
 
-@ffi.def_extern()
-def bp_event_h(ev, handle, json):
+def _collect(ev, handle, payload):
     EVENTS.append((ev, handle, threading.get_ident()))
 
 
 @pytest.fixture(scope="module", autouse=True)
 def native_stack():
     assert lib.bp_init() == 0
+    previous = _events.set_sink(_collect)
     yield
+    _events.set_sink(previous)
     lib.bp_close()
 
 
@@ -189,3 +192,50 @@ def test_cmd_rejected_when_loop_not_running():
     with pytest.raises(OSError):
         send(lib.BP_CMD_PING, handle=8)
     assert len(pongs()) == 1
+
+
+def test_run_without_init_refuses():
+    """bp_loop_run without bp_loop_init is refused, loudly."""
+    assert lib.bp_loop_run() == errno.EINVAL
+
+
+def test_done_while_running_refuses(capfd):
+    """bp_loop_done while the loop runs is the use-after-free case: it must
+    refuse (EBUSY), say so on stderr, and leave the loop fully working."""
+    EVENTS.clear()
+    loop = ReLoop().start()
+
+    assert lib.bp_loop_done() == errno.EBUSY
+    assert "refusing to free" in capfd.readouterr().err
+
+    send(lib.BP_CMD_PING, handle=1)
+    assert wait_until(lambda: len(pongs()) == 1), "loop must survive the refused call"
+    loop.stop()
+
+
+def test_run_while_running_refuses():
+    """A second bp_loop_run while the loop is live is refused."""
+    EVENTS.clear()
+    loop = ReLoop().start()
+    assert lib.bp_loop_run() == errno.EALREADY
+    loop.stop()
+
+
+def test_double_init_refuses():
+    """A second bp_loop_init without bp_loop_done is refused on the re
+    thread itself."""
+    results = []
+
+    def main():
+        results.append(lib.bp_loop_init())
+        results.append(lib.bp_loop_init())  # misuse: no bp_loop_done between
+        lib.bp_loop_run()
+        results.append(lib.bp_loop_done())
+
+    thread = threading.Thread(target=main, name="baresip-re")
+    thread.start()
+    assert wait_until(lambda: len(results) >= 2)
+    send(lib.BP_CMD_STOP)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert results == [0, errno.EALREADY, 0]
