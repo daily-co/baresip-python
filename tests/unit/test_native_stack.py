@@ -8,6 +8,7 @@
 it is allowed to touch, what it is allowed to print, and what it says."""
 
 import contextlib
+import errno
 import logging
 import os
 import subprocess
@@ -15,7 +16,7 @@ import sys
 
 import pytest
 
-from baresip import BaresipError
+from baresip import BaresipError, Config
 
 native = pytest.importorskip("baresip._native")
 lib = native.lib
@@ -123,6 +124,48 @@ async def test_sip_trace_toggles():
 def test_unknown_log_level_is_rejected():
     with pytest.raises(ValueError):
         Runtime(native_log_level="verbose")
+
+
+async def test_start_with_config():
+    """A Config is declarative: its log level wins over the constructor's
+    and is active from the stack's first line, and its sip_trace switch is
+    applied once the stack is up."""
+    runtime = Runtime()  # constructor default: warning
+    with native_records() as captured:
+        await runtime.start(Config(native_log_level="debug", sip_trace=True))
+        try:
+            ev, _ = await runtime.cmd(lib.BP_CMD_PING)
+            assert ev == lib.BP_EV_PONG
+        finally:
+            await runtime.close()
+
+    assert any(r.levelno == logging.DEBUG for r in captured), (
+        "the Config's level did not reach the stack in time for startup"
+    )
+
+
+async def test_failure_after_ready_stops_the_thread():
+    """A start that fails after the stack came up must take the stack back
+    down and leave the process able to run a fresh runtime — it is a failed
+    start, not a death."""
+    runtime = Runtime()
+    real_push = runtime._push_cmd
+
+    def deny_sip_trace(cmd, seq, args):
+        if cmd == lib.BP_CMD_SET_SIP_TRACE:
+            return errno.EIO
+        return real_push(cmd, seq, args)
+
+    runtime._push_cmd = deny_sip_trace
+    with pytest.raises(BaresipError):
+        await runtime.start(Config(sip_trace=True))
+
+    assert runtime._thread is not None and not runtime._thread.is_alive()
+    assert runtime._conf_dir is None, "the private directory outlived the failed start"
+
+    fresh = Runtime()
+    await fresh.start()
+    await fresh.close()
 
 
 SILENT_RUN = """

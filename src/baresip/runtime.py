@@ -26,6 +26,7 @@ import time
 
 from baresip._events import set_sink
 from baresip._native import ffi, lib
+from baresip.config import Config
 from baresip.errors import BaresipError, CommandQueueFull, CommandTimeout, RuntimeDead
 
 logger = logging.getLogger("baresip.runtime")
@@ -118,16 +119,24 @@ class Runtime:
 
     # -- lifecycle -----------------------------------------------------------
 
-    async def start(self, config_text: str = _DEFAULT_CONFIG) -> None:
+    async def start(self, config: Config | str = _DEFAULT_CONFIG) -> None:
         """Start the SIP thread and wait for it to become ready.
 
         Args:
-            config_text: Configuration for the native stack, in its own
-                ``key value`` line format.
+            config: A :class:`Config`, or raw configuration text in the
+                stack's own ``key value`` line format. A Config's
+                ``native_log_level`` overrides the constructor's and is
+                active from the stack's first line; its ``sip_trace``
+                switch is applied once the stack is up.
         """
+        sip_trace = False
+        if isinstance(config, Config):
+            self._native_log_level = LOG_LEVELS[config.native_log_level]
+            sip_trace = config.sip_trace
+            config = config.render()
         # The parser rejects an empty buffer, so "no settings" still needs
         # something to parse.
-        self._config_text = config_text or _DEFAULT_CONFIG
+        self._config_text = config or _DEFAULT_CONFIG
 
         with Runtime._class_lock:
             if Runtime._process_poisoned:
@@ -167,21 +176,33 @@ class Runtime:
 
             ok = await self._loop.run_in_executor(None, self._ready.wait, 5)
             if not ok or self._init_err:
-                if not ok:
-                    # The thread may still come up and enter the loop; make
-                    # a best effort to stop it before abandoning it.
-                    self._send_stop()
-                    self._thread.join(2)
                 detail = os.strerror(self._init_err) if self._init_err else "no ready signal"
                 raise BaresipError(f"SIP thread failed to start: {detail}")
 
             self._state = "running"
+            if sip_trace:
+                await self.set_sip_trace(True)
             self._watchdog_task = self._loop.create_task(self._watchdog())
             atexit.register(self._forced_teardown)
             logger.info("runtime started")
         except BaseException:
             with Runtime._class_lock:
                 Runtime._active = None
+            # A SIP thread that did come up is stopped, not abandoned — and
+            # "closing" tells it this is shutdown, not an unexpected death.
+            self._state = "closing"
+            if self._thread is not None and self._thread.is_alive():
+                self._send_stop()
+                self._thread.join(2)
+            if self._thread is not None and self._thread.is_alive():
+                # Wedged: the stack is still standing, so this process can
+                # never run another one.
+                self._state = "dead"
+                with Runtime._class_lock:
+                    Runtime._process_poisoned = True
+                logger.critical("SIP thread did not stop after a failed start; runtime is dead")
+            else:
+                self._state = "closed"
             set_sink(None)
             self._stop_native_log()
             self._remove_conf_dir()

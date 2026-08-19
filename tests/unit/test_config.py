@@ -1,0 +1,154 @@
+#
+# Copyright (c) 2026, Daily
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+"""Config and Account: the exact text they render, and what they refuse.
+
+The golden strings here are byte-for-byte on purpose: the native parsers
+consume this text, so any drift in it is a behavior change and must show up
+as a failing test, not as a mystery at registration time.
+
+Pure-Python tests — no built extension required.
+"""
+
+import pytest
+
+from baresip import Account, Config
+from baresip.config import LOG_LEVEL_NAMES
+
+# -- Account.aor() -------------------------------------------------------------
+
+
+def test_aor_defaults_golden():
+    account = Account(user="alice", domain="example.com", password="s3cret")
+    assert account.aor() == (
+        '<sip:alice@example.com;transport=udp>;auth_pass="s3cret";regint=600;'
+        "answermode=manual;audio_codecs=pcmu,pcma;dtmfmode=rtpevent"
+    )
+
+
+def test_aor_every_field_golden():
+    account = Account(
+        user="alice",
+        domain="example.com:5061",
+        password="pass word",  # spaces survive: the parameter is quoted
+        registrar="sbc.example.com;transport=tcp",
+        reg_interval=300,
+        transport="tls",
+        audio_codecs=("opus/48000/2", "pcmu"),
+        dtmf_mode="info",
+    )
+    assert account.aor() == (
+        '<sip:alice@example.com:5061;transport=tls>;auth_pass="pass word";'
+        "regint=300;answermode=manual;audio_codecs=opus/48000/2,pcmu;"
+        'dtmfmode=info;outbound="sip:sbc.example.com;transport=tcp"'
+    )
+
+
+def test_aor_empty_password_omits_the_parameter():
+    aor = Account(user="alice", domain="example.com", password="").aor()
+    assert "auth_pass" not in aor
+
+
+def test_aor_empty_codecs_offer_everything_loaded():
+    aor = Account(user="alice", domain="example.com", password="x", audio_codecs=()).aor()
+    assert "audio_codecs" not in aor
+
+
+def test_aor_registrar_uri_is_not_double_prefixed():
+    aor = Account(user="a", domain="d", password="x", registrar="sips:sbc.example.com").aor()
+    assert 'outbound="sips:sbc.example.com"' in aor
+
+
+def test_repr_redacts_the_password():
+    account = Account(user="alice", domain="example.com", password="s3cret")
+    assert "s3cret" not in repr(account)
+    assert "***" in repr(account)
+    # An unset password is shown as such, not as a fake redaction.
+    assert "'***'" not in repr(Account(user="alice", domain="example.com", password=""))
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"user": ""},
+        {"user": "a;b"},  # ends the URI early
+        {"user": "a b"},
+        {"user": "a@b"},
+        {"domain": ""},
+        {"domain": "ex ample.com"},
+        {"domain": "d;transport=tcp"},  # transport is a field, not a suffix
+        {"password": 'p"w'},  # no unescape exists: cannot round-trip
+        {"password": "p\\w"},
+        {"password": "p\nw"},
+        {"registrar": ""},
+        {"registrar": 'sbc"'},
+        {"registrar": "sbc example.com"},
+        {"reg_interval": -1},
+        {"transport": "sctp"},
+        {"audio_codecs": ("",)},
+        {"audio_codecs": ("pcmu,pcma",)},  # one name, not a pre-joined list
+        {"dtmf_mode": "inband"},
+    ],
+)
+def test_account_rejects_what_the_parser_would_misread(kwargs):
+    fields = {"user": "alice", "domain": "example.com", "password": "x", **kwargs}
+    with pytest.raises(ValueError):
+        Account(**fields)
+
+
+@pytest.mark.parametrize("value", [True, "600", 600.0])
+def test_account_rejects_non_int_reg_interval(value):
+    with pytest.raises(TypeError):
+        Account(user="a", domain="d", password="x", reg_interval=value)
+
+
+# -- Config.render() -----------------------------------------------------------
+
+
+def test_render_defaults_golden():
+    assert Config().render() == "audio_source aumem\naudio_player aumem\n"
+
+
+def test_render_driver_with_device_golden():
+    config = Config(audio_driver="aufile,/tmp/greeting.wav")
+    assert config.render() == (
+        "audio_source aufile,/tmp/greeting.wav\naudio_player aufile,/tmp/greeting.wav\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"audio_driver": ""},
+        {"audio_driver": "aumem\nsip_listen 0.0.0.0:5060"},  # line injection
+        {"audio_driver": "aufile,/a path/x.wav"},  # value parsing stops at a space
+        {"expose_headers": ("X-Custom", "not a header")},
+        {"expose_headers": ("",)},
+        {"native_log_level": "verbose"},
+        {"max_concurrent_calls": 0},
+    ],
+)
+def test_config_rejects_bad_values(kwargs):
+    with pytest.raises(ValueError):
+        Config(**kwargs)
+
+
+@pytest.mark.parametrize("value", [True, "4", 4.0])
+def test_config_rejects_non_int_call_limit(value):
+    with pytest.raises(TypeError):
+        Config(max_concurrent_calls=value)
+
+
+def test_reserved_fields_are_accepted():
+    """Present so the configuration surface is stable; not consumed yet."""
+    Config(expose_headers=("X-Customer-Id", "P-Asserted-Identity"), max_concurrent_calls=4)
+
+
+def test_level_names_match_the_runtime():
+    pytest.importorskip("baresip._native")
+    from baresip.runtime import LOG_LEVELS
+
+    assert set(LOG_LEVELS) == set(LOG_LEVEL_NAMES)

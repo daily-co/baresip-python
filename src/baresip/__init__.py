@@ -17,6 +17,7 @@ and may change without notice. See the README for the stability policy.
 import importlib
 import logging
 
+from baresip.config import Account, Config
 from baresip.errors import BaresipError, CommandQueueFull, CommandTimeout, RuntimeDead
 
 # Library convention: log into the "baresip" hierarchy, emit nothing unless
@@ -41,9 +42,11 @@ def __getattr__(name: str):
 # The public-API definition. Names are added here — and only here — as their
 # implementations land.
 __all__: list[str] = [
+    "Account",
     "BaresipError",
     "CommandQueueFull",
     "CommandTimeout",
+    "Config",
     "Runtime",
     "RuntimeDead",
 ]
