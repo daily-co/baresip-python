@@ -26,15 +26,6 @@ from baresip.runtime import Runtime  # imports the extension, hence after the sk
 UNKNOWN_CMD = 999  # no case in cmd_handler: sent fine, never completes
 
 
-@pytest.fixture(autouse=True)
-def reset_runtime_class():
-    """Tests exercise death and poisoning; reset the process-level guards
-    so each test starts from a clean slate."""
-    yield
-    Runtime._active = None
-    Runtime._process_poisoned = False
-
-
 async def test_echo_command_resolves_future():
     runtime = Runtime()
     await runtime.start()

@@ -33,16 +33,17 @@ LIBRE_A = NATIVE_PREFIX / "lib" / "libre.a"
 LIBBARESIP_A = BARESIP_SRC / "build" / "libbaresip.a"
 
 
-def _openssl_lib_dir() -> Path | None:
-    # Only macOS needs help locating OpenSSL: Homebrew's openssl@3 is keg-only,
-    # so its lib dir is never on the default linker search path. On Linux the
-    # distro's OpenSSL dev package installs into the standard system library
-    # directories, so plain -lssl/-lcrypto resolves without an extra -L.
+def _brew_lib_dir(formula: str) -> Path | None:
+    # Only macOS needs help locating these: Homebrew's openssl@3 is keg-only, so
+    # its lib dir is never on the default linker search path, and opus lives
+    # under the Homebrew prefix rather than a system one. On Linux the distro
+    # dev packages install into the standard system library directories, so
+    # plain -lssl/-lopus resolves without an extra -L.
     if platform.system() == "Darwin":
         brew = shutil.which("brew")
         if brew:
             proc = subprocess.run(
-                [brew, "--prefix", "openssl@3"], capture_output=True, text=True, check=False
+                [brew, "--prefix", formula], capture_output=True, text=True, check=False
             )
             if proc.returncode == 0:
                 return Path(proc.stdout.strip()) / "lib"
@@ -54,19 +55,42 @@ ffi = FFI()
 ffi.cdef("""
 #define BP_CMD_PING ...
 #define BP_CMD_STOP ...
+#define BP_CMD_SET_LOG_LEVEL ...
+#define BP_CMD_SET_SIP_TRACE ...
 
 #define BP_EV_PONG ...
+#define BP_EV_DONE ...
+
+#define BP_LOG_DEBUG ...
+#define BP_LOG_INFO ...
+#define BP_LOG_WARN ...
+#define BP_LOG_ERROR ...
+
+#define BP_LOG_CH_MAIN ...
+#define BP_LOG_CH_SIP ...
+
+struct bp_log_rec {
+    uint32_t level;
+    uint32_t channel;
+    uint32_t dropped;
+    uint32_t len;
+    char msg[...];
+};
 
 const char *bp_version(void);
 
 int  bp_init(void);
 void bp_close(void);
 
-int  bp_loop_init(void);
+int  bp_loop_init(const char *conf_dir, const char *config_text, int log_level);
 int  bp_loop_run(void);
 int  bp_loop_done(void);
 
 int  bp_cmd(int cmd, uint32_t handle, const char *json_args);
+
+void bp_log_start(void);
+void bp_log_stop(void);
+int  bp_log_read(struct bp_log_rec *rec);
 
 // "Python+C" (not plain "Python") so the callback gets external linkage:
 // shim.c is a separate translation unit and must be able to call it.
@@ -76,8 +100,10 @@ extern "Python+C" void bp_event_h(int ev, uint32_t handle, const char *json);
 _library_dirs: list[str] = []
 _libraries = ["ssl", "crypto", "z", "resolv", "m"]
 # libbaresip before libre: baresip depends on re, and single-pass linkers
-# resolve archives left to right.
-_extra_link_args = [str(LIBBARESIP_A), str(LIBRE_A)]
+# resolve archives left to right. -lopus comes after both: nothing needs
+# the codec until the opus module gets pulled out of libbaresip.a, and a
+# linker that drops libraries nothing has asked for yet would discard it.
+_extra_link_args = [str(LIBBARESIP_A), str(LIBRE_A), "-lopus"]
 
 if platform.system() == "Darwin":
     _extra_link_args += [
@@ -86,9 +112,10 @@ if platform.system() == "Darwin":
         "-framework",
         "CoreFoundation",
     ]
-    _ssl_dir = _openssl_lib_dir()
-    if _ssl_dir:
-        _library_dirs.append(str(_ssl_dir))
+    for _formula in ("openssl@3", "opus"):
+        _dir = _brew_lib_dir(_formula)
+        if _dir:
+            _library_dirs.append(str(_dir))
 else:
     _libraries.append("pthread")
 

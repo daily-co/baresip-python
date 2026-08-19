@@ -15,6 +15,8 @@ extension (``make native ext``); skipped otherwise.
 
 import errno
 import os
+import shutil
+import tempfile
 import threading
 import time
 
@@ -31,18 +33,30 @@ from baresip import _events  # import requires the built extension, hence after 
 # Every event the sink receives: (event id, handle, thread ident).
 EVENTS: list[tuple[int, int, int]] = []
 
+CONFIG = b"# baresip-python tests\n"
+CONF_DIR = b""  # a private directory for the stack, set up by the fixture
+
 
 def _collect(ev, handle, payload):
     EVENTS.append((ev, handle, threading.get_ident()))
 
 
+def loop_init():
+    """bp_loop_init with the arguments every test here shares."""
+    return lib.bp_loop_init(CONF_DIR, CONFIG, lib.BP_LOG_ERROR)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def native_stack():
+    global CONF_DIR
+    conf_dir = tempfile.mkdtemp(prefix="baresip-test-")
+    CONF_DIR = conf_dir.encode()
     assert lib.bp_init() == 0
     previous = _events.set_sink(_collect)
     yield
     _events.set_sink(previous)
     lib.bp_close()
+    shutil.rmtree(conf_dir, ignore_errors=True)
 
 
 def send(cmd, handle=0):
@@ -87,7 +101,7 @@ class ReLoop:
 
     def _main(self):
         self.ident = threading.get_ident()
-        self._init_err = lib.bp_loop_init()
+        self._init_err = loop_init()
         self._ready.set()
         if self._init_err:
             return
@@ -199,6 +213,20 @@ def test_run_without_init_refuses():
     assert lib.bp_loop_run() == errno.EINVAL
 
 
+def test_done_without_init_refuses(capfd):
+    """bp_loop_done without bp_loop_init is refused, loudly — running the
+    teardown over a stack that never came up must not look like success."""
+    assert lib.bp_loop_done() == errno.EINVAL
+    assert "nothing to tear down" in capfd.readouterr().err
+
+    # The refusal must leave the process able to run a real cycle.
+    EVENTS.clear()
+    loop = ReLoop().start()
+    send(lib.BP_CMD_PING, handle=1)
+    assert wait_until(lambda: len(pongs()) == 1)
+    loop.stop()
+
+
 def test_done_while_running_refuses(capfd):
     """bp_loop_done while the loop runs is the use-after-free case: it must
     refuse (EBUSY), say so on stderr, and leave the loop fully working."""
@@ -227,8 +255,8 @@ def test_double_init_refuses():
     results = []
 
     def main():
-        results.append(lib.bp_loop_init())
-        results.append(lib.bp_loop_init())  # misuse: no bp_loop_done between
+        results.append(loop_init())
+        results.append(loop_init())  # misuse: no bp_loop_done between
         lib.bp_loop_run()
         results.append(lib.bp_loop_done())
 

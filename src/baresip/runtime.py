@@ -15,9 +15,12 @@ new process.
 
 import asyncio
 import atexit
+import contextlib
 import errno as _errno
 import logging
 import os
+import shutil
+import tempfile
 import threading
 import time
 
@@ -29,6 +32,30 @@ logger = logging.getLogger("baresip.runtime")
 
 _STOP_RETRIES = 100
 _STOP_RETRY_DELAY = 0.01
+
+#: Native log levels, by the name used in configuration.
+LOG_LEVELS = {
+    "debug": lib.BP_LOG_DEBUG,
+    "info": lib.BP_LOG_INFO,
+    "warning": lib.BP_LOG_WARN,
+    "error": lib.BP_LOG_ERROR,
+}
+
+# Everything the native stack says arrives under these two, so an
+# application can silence or route them independently of our own logging.
+native_logger = logging.getLogger("baresip.native")
+sip_logger = logging.getLogger("baresip.native.sip")
+
+_TO_PYTHON_LEVEL = {
+    lib.BP_LOG_DEBUG: logging.DEBUG,
+    lib.BP_LOG_INFO: logging.INFO,
+    lib.BP_LOG_WARN: logging.WARNING,
+    lib.BP_LOG_ERROR: logging.ERROR,
+}
+
+# The stack rejects an empty configuration, so "apply no settings" still
+# needs a line of text.
+_DEFAULT_CONFIG = "# baresip-python defaults\n"
 
 
 class Runtime:
@@ -46,7 +73,13 @@ class Runtime:
     _active = None  # the live instance, if any (one per process at a time)
     _process_poisoned = False  # a runtime died here; no restarts in-process
 
-    def __init__(self, *, command_timeout: float = 5.0, watchdog_interval: float = 10.0):
+    def __init__(
+        self,
+        *,
+        command_timeout: float = 5.0,
+        watchdog_interval: float = 10.0,
+        native_log_level: str = "warning",
+    ):
         """Initialize the runtime.
 
         Args:
@@ -54,12 +87,26 @@ class Runtime:
                 completion before CommandTimeout.
             watchdog_interval: Seconds between health PINGs of the SIP
                 thread; a miss is reported CRITICAL.
+            native_log_level: Lowest severity to capture from the native
+                stack: "debug", "info", "warning" or "error".
+
+        Raises:
+            ValueError: native_log_level is not one of the four names.
         """
+        if native_log_level not in LOG_LEVELS:
+            raise ValueError(
+                f"native_log_level must be one of {sorted(LOG_LEVELS)}, got {native_log_level!r}"
+            )
         self._command_timeout = command_timeout
         self._watchdog_interval = watchdog_interval
+        self._native_log_level = LOG_LEVELS[native_log_level]
+        self._conf_dir: str | None = None
+        self._config_text = _DEFAULT_CONFIG
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
+        self._log_thread: threading.Thread | None = None
         self._ready = threading.Event()
+        self._stack_down = threading.Event()
         self._init_err: int | None = None
         self._pending: dict[int, asyncio.Future] = {}
         self._seq = 0
@@ -71,8 +118,17 @@ class Runtime:
 
     # -- lifecycle -----------------------------------------------------------
 
-    async def start(self) -> None:
-        """Start the SIP thread and wait for it to become ready."""
+    async def start(self, config_text: str = _DEFAULT_CONFIG) -> None:
+        """Start the SIP thread and wait for it to become ready.
+
+        Args:
+            config_text: Configuration for the native stack, in its own
+                ``key value`` line format.
+        """
+        # The parser rejects an empty buffer, so "no settings" still needs
+        # something to parse.
+        self._config_text = config_text or _DEFAULT_CONFIG
+
         with Runtime._class_lock:
             if Runtime._process_poisoned:
                 raise RuntimeDead("a runtime already died in this process; start a new process")
@@ -89,6 +145,17 @@ class Runtime:
 
             self._loop = asyncio.get_running_loop()
             set_sink(self._on_native_event)
+            # The stack is confined to this directory: whatever a module
+            # decides to read or write, it cannot reach the invoking user's
+            # home directory.
+            self._conf_dir = tempfile.mkdtemp(prefix="baresip-")
+            # Started before the stack comes up, so its own startup lines
+            # are captured too.
+            lib.bp_log_start()
+            self._log_thread = threading.Thread(
+                target=self._drain_native_log, name="baresip-log", daemon=True
+            )
+            self._log_thread.start()
             # Daemon: CPython joins non-daemon threads BEFORE running atexit
             # hooks, so a non-daemon SIP thread would hang interpreter exit
             # forever whenever an application forgets close() — and the
@@ -116,6 +183,8 @@ class Runtime:
             with Runtime._class_lock:
                 Runtime._active = None
             set_sink(None)
+            self._stop_native_log()
+            self._remove_conf_dir()
             raise
 
     async def close(self) -> None:
@@ -147,27 +216,79 @@ class Runtime:
             )
             self._fail_pending(RuntimeDead("SIP thread failed to stop"))
             set_sink(None)
+            await self._loop.run_in_executor(None, self._stop_native_log)
+            self._remove_conf_dir()
             raise RuntimeDead("SIP thread did not stop within 5s")
 
         atexit.unregister(self._forced_teardown)
         set_sink(None)
         self._fail_pending(BaresipError("runtime closed"))
+        # After the SIP thread is gone: no more lines can arrive, and the
+        # reader hands over what is left before it stops.
+        await self._loop.run_in_executor(None, self._stop_native_log)
         lib.bp_close()
+        self._remove_conf_dir()
         self._state = "closed"
         with Runtime._class_lock:
             Runtime._active = None
         logger.info("runtime closed")
 
+    def _drain_native_log(self) -> None:
+        """LOG THREAD. Collect captured lines until the capture is stopped.
+
+        Blocks inside the native read, which releases the GIL, so this
+        thread costs nothing while the stack is quiet."""
+        rec = ffi.new("struct bp_log_rec *")
+        while lib.bp_log_read(rec):
+            try:
+                if rec.dropped:
+                    native_logger.warning(
+                        "%d native log line(s) dropped: the reader could not keep up", rec.dropped
+                    )
+                target = sip_logger if rec.channel == lib.BP_LOG_CH_SIP else native_logger
+                # Bytes off the network reach us here, so neither valid
+                # UTF-8 nor the absence of NULs can be assumed.
+                text = ffi.buffer(rec.msg, rec.len)[:].decode("utf-8", "replace")
+                target.log(_TO_PYTHON_LEVEL.get(rec.level, logging.INFO), "%s", text)
+            except Exception:
+                # A logging handler that raises must not end log capture.
+                with contextlib.suppress(Exception):
+                    logger.exception("native log line could not be delivered")
+
+    def _stop_native_log(self) -> None:
+        lib.bp_log_stop()
+        if self._log_thread is not None:
+            self._log_thread.join(2)
+            if self._log_thread.is_alive():
+                logger.error("native log reader did not stop")
+            self._log_thread = None
+
+    def _remove_conf_dir(self) -> None:
+        """Discard the stack's private directory, unless the stack is still
+        standing — a wedged SIP thread may still be reading from it."""
+        if self._conf_dir is None:
+            return
+        if not self._stack_down.is_set() and self._thread is not None and self._thread.is_alive():
+            logger.warning("leaving %s behind: the SIP stack is still up", self._conf_dir)
+            return
+        shutil.rmtree(self._conf_dir, ignore_errors=True)
+        self._conf_dir = None
+
     def _re_thread_main(self) -> None:
-        self._init_err = lib.bp_loop_init()
+        self._init_err = lib.bp_loop_init(
+            self._conf_dir.encode(), self._config_text.encode(), self._native_log_level
+        )
         self._ready.set()
         if self._init_err:
+            # A failed init unwinds itself completely; nothing to tear down.
+            self._stack_down.set()
             return
         err = 0
         try:
             err = lib.bp_loop_run()
         finally:
             lib.bp_loop_done()
+            self._stack_down.set()
             closing = self._state in ("closing", "closed")
             if err:
                 logger.log(
@@ -191,6 +312,10 @@ class Runtime:
             len(self._pending),
         )
         set_sink(None)
+        # Signal only — this runs on the SIP thread, and the log reader
+        # stops itself once it has handed over the last lines.
+        lib.bp_log_stop()
+        self._remove_conf_dir()
         self._call_threadsafe(self._finish_death)
 
     def _finish_death(self) -> None:
@@ -210,11 +335,12 @@ class Runtime:
         drain — detach the callback, stop the loop, join. Correct
         applications close() first and never reach this."""
         set_sink(None)
-        if self._thread is None or not self._thread.is_alive():
-            return
-        logger.critical("runtime never closed; forcing SIP thread shutdown at interpreter exit")
-        self._send_stop()
-        self._thread.join(2)
+        if self._thread is not None and self._thread.is_alive():
+            logger.critical("runtime never closed; forcing SIP thread shutdown at interpreter exit")
+            self._send_stop()
+            self._thread.join(2)
+        self._stop_native_log()
+        self._remove_conf_dir()
 
     def _send_stop(self) -> None:
         for _ in range(_STOP_RETRIES):
@@ -229,8 +355,13 @@ class Runtime:
 
     # -- commands ------------------------------------------------------------
 
-    async def cmd(self, cmd_id: int, *, timeout: float | None = None):
+    async def cmd(self, cmd_id: int, *, args: str | None = None, timeout: float | None = None):
         """Send a command and await its completion event.
+
+        Args:
+            cmd_id: One of the BP_CMD_* ids.
+            args: Argument text for commands that take one.
+            timeout: Seconds to wait, defaulting to the runtime's.
 
         Returns:
             (event id, payload bytes or None) from the completing event.
@@ -249,7 +380,9 @@ class Runtime:
         future = self._loop.create_future()
         self._pending[seq] = future
 
-        err = self._push_cmd(cmd_id, seq, ffi.NULL)
+        err = self._push_cmd(
+            cmd_id, seq, ffi.NULL if args is None else ffi.new("char[]", args.encode())
+        )
         if err:
             self._pending.pop(seq, None)
             if err == _errno.EAGAIN:
@@ -272,6 +405,24 @@ class Runtime:
                 extra={"cmd": cmd_id, "seq": seq},
             )
             raise CommandTimeout(f"command {cmd_id} got no completion in {timeout}s") from None
+
+    async def set_native_log_level(self, level: str) -> None:
+        """Change how much the native stack logs, while it runs.
+
+        Args:
+            level: "debug", "info", "warning" or "error".
+
+        Raises:
+            ValueError: level is not one of the four names.
+        """
+        if level not in LOG_LEVELS:
+            raise ValueError(f"level must be one of {sorted(LOG_LEVELS)}, got {level!r}")
+        await self.cmd(lib.BP_CMD_SET_LOG_LEVEL, args=str(LOG_LEVELS[level]))
+
+    async def set_sip_trace(self, enabled: bool) -> None:
+        """Log every SIP message sent and received, under
+        ``baresip.native.sip`` at DEBUG level."""
+        await self.cmd(lib.BP_CMD_SET_SIP_TRACE, args="1" if enabled else "0")
 
     def _next_seq(self) -> int:
         self._seq = (self._seq + 1) & 0xFFFFFFFF or 1
