@@ -35,6 +35,15 @@
 #define BP_CMD_UA_REGISTER 7   /* json_args: a UA handle, in decimal */
 #define BP_CMD_UA_UNREGISTER 8 /* json_args: a UA handle, in decimal */
 
+/* Call commands. Args: a call handle in decimal; ANSWER takes "HANDLE V"
+ * where V=1 accepts with video (a hook for later — inert while the build
+ * carries no video codecs). Reject and hangup complete when the response
+ * or BYE is issued; the CALL_CLOSED stack event follows immediately and
+ * is what invalidates the handle. */
+#define BP_CMD_CALL_ANSWER 9
+#define BP_CMD_CALL_REJECT 10 /* answers 486 Busy Here */
+#define BP_CMD_CALL_HANGUP 11
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */

@@ -19,6 +19,7 @@ import logging
 import os
 
 from baresip._native import lib
+from baresip.call import Call
 from baresip.config import Account
 from baresip.errors import BaresipError, RegistrationError, StaleHandleError
 from baresip.events import Event, StackEvent
@@ -68,6 +69,8 @@ class UserAgent:
         self._handle = handle
         self._registered = False
         self._listeners: dict = {}
+        self._incoming_callbacks: list = []
+        self._incoming_listener = None
 
     def __repr__(self) -> str:
         return f"<UserAgent handle={self._handle:#x} registered={self._registered}>"
@@ -193,6 +196,33 @@ class UserAgent:
                 )
 
         return future, listener
+
+    def on_incoming(self, callback) -> None:
+        """Invoke ``callback(call)`` for each new inbound call to this agent.
+
+        The :class:`~baresip.call.Call` arrives in
+        :attr:`~baresip.call.CallState.INCOMING` state carrying the
+        caller's URI, Call-ID, and any allowlisted headers from the
+        INVITE; the callback decides to ``answer()`` or ``reject()``.
+        Exceptions in one callback do not starve the others.
+        """
+        if callback in self._incoming_callbacks:
+            return
+        self._incoming_callbacks.append(callback)
+        if self._incoming_listener is None:
+
+            def listener(event: StackEvent) -> None:
+                if event.event is not Event.CALL_INCOMING or event.ua != self._handle:
+                    return
+                call = Call(self._runtime, event)
+                for cb in list(self._incoming_callbacks):
+                    try:
+                        cb(call)
+                    except Exception:
+                        logger.exception("on_incoming callback raised; continuing")
+
+            self._incoming_listener = listener
+            self._runtime.subscribe(listener)
 
     def on(self, listener) -> None:
         """Deliver this agent's stack events to ``listener``.

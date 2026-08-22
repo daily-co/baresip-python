@@ -38,7 +38,12 @@ __version__ = "0.0.0.dev0"
 # Names that pull in the native extension are resolved lazily (PEP 562), so
 # that `import baresip` — and with it the version lookup done by build
 # tooling — works before the extension is compiled.
-_NATIVE_BACKED = {"Runtime": "baresip.runtime", "UserAgent": "baresip.ua"}
+_NATIVE_BACKED = {
+    "Call": "baresip.call",
+    "CallState": "baresip.call",
+    "Runtime": "baresip.runtime",
+    "UserAgent": "baresip.ua",
+}
 
 
 def __getattr__(name: str):
@@ -53,6 +58,8 @@ def __getattr__(name: str):
 __all__: list[str] = [
     "Account",
     "BaresipError",
+    "Call",
+    "CallState",
     "CommandQueueFull",
     "CommandTimeout",
     "Config",

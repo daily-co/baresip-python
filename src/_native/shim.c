@@ -633,12 +633,36 @@ static void emit_stack_event(int ev, struct ua *ua, struct call *call, const str
     if (call_handle) {
         const char *peer = call_peeruri(call);
         const char *id = call_id(call);
+        const struct list *hdrs = call_get_custom_hdrs(call);
+        struct le *le;
 
         jw_kv_u32(&w, "call", call_handle);
         if (peer)
             jw_kv_str(&w, "peer", peer);
         if (id)
             jw_kv_str(&w, "call_id", id);
+        /* Headers captured from the incoming INVITE by the UA's xhdr
+         * filter (installed from the expose allowlist at UA_ALLOC). They
+         * live on the call, so every event for it carries them. No event
+         * carries both a call and a msg, so "headers" stays unique. */
+        if (!list_isempty(hdrs)) {
+            bool open = false;
+
+            for (le = list_head(hdrs); le; le = le->next) {
+                const struct sip_hdr *hdr = le->data;
+
+                if (!open) {
+                    jw_key(&w, "headers");
+                    jw_putc(&w, '{');
+                    open = true;
+                } else
+                    jw_putc(&w, ',');
+                jw_quote(&w, hdr->name.p, hdr->name.l, BP_JSON_VALUE_MAX);
+                jw_putc(&w, ':');
+                jw_quote(&w, hdr->val.p, hdr->val.l, BP_JSON_VALUE_MAX);
+            }
+            jw_putc(&w, '}');
+        }
     }
     if (msg) {
         if (!call && pl_isset(&msg->callid))
@@ -781,11 +805,18 @@ static void cmd_handler(int id, void *data, void *arg)
          * already exists; this returns it. Dropping our creator reference
          * leaves the slot's as the only one. */
         uint32_t h = handle_create(ua, BP_OBJ_UA);
+        size_t i;
 
         mem_deref(ua);
         if (!h) {
             bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"table_full\"}");
             break;
+        }
+        /* Capture allowlisted headers from INVITEs to this agent; they
+         * surface on its calls' events. */
+        for (i = 0; i < g_expose_n; i++) {
+            if (ua_add_xhdr_filter(ua, g_expose[i]))
+                fprintf(stderr, "baresip shim: xhdr filter %s failed\n", g_expose[i]);
         }
         re_snprintf(json, sizeof(json), "{\"handle\":%u}", h);
         bp_emit(BP_EV_DONE, msg->handle, json);
@@ -821,6 +852,48 @@ static void cmd_handler(int id, void *data, void *arg)
             break;
         }
         ua_unregister(ua);
+        bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
+    case BP_CMD_CALL_ANSWER: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        bool video = end && atoi(end);
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+
+        if (!call) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        int cerr = call_answer(call, 200, video ? VIDMODE_ON : VIDMODE_OFF);
+
+        if (cerr) {
+            char json[64];
+
+            re_snprintf(json, sizeof(json), "{\"error\":\"answer\",\"errno\":%d}", cerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+        } else
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
+    case BP_CMD_CALL_REJECT:
+    case BP_CMD_CALL_HANGUP: {
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+
+        if (!call) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        /* ua_hangupf — not bare call_hangup — is the whole-life-cycle
+         * hangup: it sends the response/BYE, emits CALL_CLOSED (which
+         * clears the handle slot), and releases the UA's reference. */
+        if (id == BP_CMD_CALL_REJECT)
+            ua_hangup(call_get_ua(call), call, 486, "Busy Here");
+        else
+            ua_hangup(call_get_ua(call), call, 0, NULL);
         bp_emit(BP_EV_DONE, msg->handle, NULL);
         break;
     }
@@ -1023,6 +1096,21 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
     err = conf_configure_buf((const uint8_t *)config_text, strlen(config_text));
     if (err)
         goto out;
+
+    /* The core's compiled default is call.accept=false, in which mode an
+     * incoming INVITE gets NO reply on the wire (not even 100 Trying) and
+     * no call object — only a SIPSESS_CONN event, with the application
+     * expected to screen the message and call ua_accept() by hand. This
+     * binding's inbound API is built entirely on the core-accepted path
+     * (CALL_INCOMING carrying a call handle), so accept mode is forced
+     * here, after the user config parse, where no config text can
+     * override it — with call.accept=false incoming calls would not be
+     * screened, they would silently vanish.
+     *
+     * FIXME: if call screening is ever wanted, expose it additively — a
+     * Python hook on the SIPSESS_CONN event plus a per-INVITE accept
+     * command — instead of surfacing this flag. */
+    conf_config()->call.accept = true;
 
     stage = BP_STAGE_BARESIP;
     err = baresip_init(conf_config());
