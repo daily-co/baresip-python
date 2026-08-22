@@ -27,6 +27,14 @@
 #define BP_CMD_SET_SIP_TRACE 4      /* json_args: "1" to enable, "0" to disable */
 #define BP_CMD_SET_EXPOSE_HEADERS 5 /* json_args: comma-separated header names */
 
+/* User-agent commands. UA_ALLOC's DONE payload is {"handle":N} on success
+ * or {"error":...} on failure. REGISTER/UNREGISTER complete when the
+ * request is issued; the outcome arrives later as REGISTER_OK /
+ * REGISTER_FAIL stack events carrying the status line as text. */
+#define BP_CMD_UA_ALLOC 6      /* json_args: an account AOR */
+#define BP_CMD_UA_REGISTER 7   /* json_args: a UA handle, in decimal */
+#define BP_CMD_UA_UNREGISTER 8 /* json_args: a UA handle, in decimal */
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */

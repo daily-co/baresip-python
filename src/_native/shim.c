@@ -700,6 +700,11 @@ static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
 
     (void)arg;
 
+    /* The CREATE event's text is the account's full AOR — auth_pass
+     * included. A credential must never cross into the payload. */
+    if (ev == BEVENT_CREATE)
+        text = NULL;
+
     emit_stack_event(ev, ua, call, msg, text);
 
     /* The call is over: no later event can reference it, so this is one
@@ -761,6 +766,64 @@ static void cmd_handler(int id, void *data, void *arg)
         expose_headers_set(msg->json ? msg->json : "");
         bp_emit(BP_EV_DONE, msg->handle, NULL);
         break;
+
+    case BP_CMD_UA_ALLOC: {
+        struct ua *ua = NULL;
+        char json[64];
+        int uerr = ua_alloc(&ua, msg->json ? msg->json : "");
+
+        if (uerr) {
+            re_snprintf(json, sizeof(json), "{\"error\":\"alloc\",\"errno\":%d}", uerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+            break;
+        }
+        /* The CREATE event just fired inside ua_alloc, so the table entry
+         * already exists; this returns it. Dropping our creator reference
+         * leaves the slot's as the only one. */
+        uint32_t h = handle_create(ua, BP_OBJ_UA);
+
+        mem_deref(ua);
+        if (!h) {
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"table_full\"}");
+            break;
+        }
+        re_snprintf(json, sizeof(json), "{\"handle\":%u}", h);
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
+    case BP_CMD_UA_REGISTER: {
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
+        struct ua *ua = handle_lookup(h, BP_OBJ_UA);
+
+        if (!ua) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        int uerr = ua_register(ua);
+
+        if (uerr) {
+            char json[64];
+
+            re_snprintf(json, sizeof(json), "{\"error\":\"register\",\"errno\":%d}", uerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+        } else
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
+    case BP_CMD_UA_UNREGISTER: {
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
+        struct ua *ua = handle_lookup(h, BP_OBJ_UA);
+
+        if (!ua) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        ua_unregister(ua);
+        bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
 
     case BP_CMD_TEST_EMIT: {
         /* Decode a canned SIP message and run it through the very same
