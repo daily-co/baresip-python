@@ -878,6 +878,75 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    case BP_CMD_UA_CONNECT: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        bool video = end ? strtol(end, &end, 10) : false;
+        struct ua *ua = handle_lookup(h, BP_OBJ_UA);
+        char json[64];
+
+        if (!ua) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+
+        /* First line: the URI. Every further line: one outgoing header. */
+        while (end && *end == ' ')
+            end++;
+        char *uri = end;
+        char *line = strchr(uri, '\n');
+        struct list hdrs;
+
+        list_init(&hdrs);
+        if (line)
+            *line++ = '\0';
+        while (line && *line) {
+            char *next = strchr(line, '\n');
+            char *colon;
+
+            if (next)
+                *next++ = '\0';
+            colon = strstr(line, ": ");
+            if (colon) {
+                *colon = '\0';
+                custom_hdrs_add(&hdrs, line, "%s", colon + 2);
+            }
+            line = next;
+        }
+
+        /* Headers ride on the UA between set and connect; clearing right
+         * after keeps them off later calls and re-registrations. All of
+         * it inside this one command, so nothing can interleave. */
+        if (!list_isempty(&hdrs))
+            ua_set_custom_hdrs(ua, &hdrs);
+
+        struct call *call = NULL;
+        int cerr = ua_connect(ua, &call, NULL, uri, video ? VIDMODE_ON : VIDMODE_OFF);
+
+        if (!list_isempty(&hdrs)) {
+            ua_set_custom_hdrs(ua, NULL);
+            list_flush(&hdrs);
+        }
+        if (cerr) {
+            re_snprintf(json, sizeof(json), "{\"error\":\"connect\",\"errno\":%d}", cerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+            break;
+        }
+        /* The OUTGOING event fired inside ua_connect, so the table entry
+         * exists; this returns it. The pointer is borrowed (the UA's list
+         * owns the call) — no reference of ours to drop here. */
+        uint32_t ch = handle_create(call, BP_OBJ_CALL);
+
+        if (!ch) {
+            ua_hangup(ua, call, 0, NULL);
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"table_full\"}");
+            break;
+        }
+        re_snprintf(json, sizeof(json), "{\"handle\":%u}", ch);
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
     case BP_CMD_CALL_REJECT:
     case BP_CMD_CALL_HANGUP: {
         uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;

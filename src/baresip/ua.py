@@ -19,27 +19,15 @@ import logging
 import os
 
 from baresip._native import lib
-from baresip.call import Call
+from baresip.call import Call, CallState
 from baresip.config import Account
-from baresip.errors import BaresipError, RegistrationError, StaleHandleError
+from baresip.errors import BaresipError, RegistrationError, StaleHandleError, split_status
 from baresip.events import Event, StackEvent
 from baresip.runtime import Runtime
 
 logger = logging.getLogger("baresip.ua")
 
 _REGISTER_TIMEOUT = 10.0
-
-
-def _parse_status(text: str) -> tuple[int | None, str]:
-    """Split an event text like ``"401 Unauthorized"`` into (401, "Unauthorized").
-
-    Transport-level failures carry plain error text with no status code;
-    those come back as (None, text).
-    """
-    head, _, tail = text.partition(" ")
-    if len(head) == 3 and head.isdigit():
-        return int(head), tail
-    return None, text
 
 
 class UserAgent:
@@ -171,6 +159,56 @@ class UserAgent:
         self._registered = False
         logger.info("unregistered", extra={"ua": self._handle})
 
+    async def dial(self, uri: str, headers: dict | None = None, *, video: bool = False) -> Call:
+        """Start an outbound call.
+
+        Returns as soon as the INVITE is on its way — await
+        :meth:`Call.wait_established <baresip.call.Call.wait_established>`
+        on the returned call for the outcome; ringing and progress arrive
+        as events on it.
+
+        A 401/407 challenge on the INVITE is answered automatically with
+        the account's credentials, same as registration — no application
+        involvement.
+
+        Args:
+            uri: The SIP URI to call (e.g. ``"sip:9196@example.com"``).
+            headers: Extra headers for the INVITE, name to value.
+            video: Offer video. Inert until video support ships.
+
+        Returns:
+            The call, in :attr:`~baresip.call.CallState.OUTGOING` state.
+
+        Raises:
+            ValueError: a URI or header that cannot travel in a request.
+            StaleHandleError: the native agent no longer exists.
+            BaresipError: the stack refused to dial.
+        """
+        if not uri or any(c in uri for c in "\r\n"):
+            raise ValueError("uri must be non-empty and single-line")
+        args = f"{self._handle} {int(video)} {uri}"
+        for name, value in (headers or {}).items():
+            if not name or any(c in name for c in "\r\n: "):
+                raise ValueError(f"invalid header name {name!r}")
+            if any(c in str(value) for c in "\r\n"):
+                raise ValueError(f"header {name}: value must be single-line")
+            args += f"\n{name}: {value}"
+        ev, payload = await self._runtime.cmd(lib.BP_CMD_UA_CONNECT, args=args)
+        if ev == lib.BP_EV_STALE_HANDLE:
+            raise StaleHandleError("user agent no longer exists")
+        data = json.loads(payload)
+        if "error" in data:
+            errno = data.get("errno")
+            detail = os.strerror(errno) if errno else data["error"]
+            raise BaresipError(f"dial failed: {detail}")
+        return Call(
+            self._runtime,
+            handle=data["handle"],
+            ua_handle=self._handle,
+            state=CallState.OUTGOING,
+            peer=uri,
+        )
+
     def _registration_outcome(self, failure: str):
         """A future resolved by this agent's next REGISTER_OK / REGISTER_FAIL.
 
@@ -186,7 +224,7 @@ class UserAgent:
             if event.event is Event.REGISTER_OK:
                 future.set_result(event)
             elif event.event is Event.REGISTER_FAIL:
-                status, reason = _parse_status(event.text or "")
+                status, reason = split_status(event.text or "")
                 future.set_exception(
                     RegistrationError(
                         f"{failure}: {event.text or 'no reason given'}",
@@ -214,7 +252,7 @@ class UserAgent:
             def listener(event: StackEvent) -> None:
                 if event.event is not Event.CALL_INCOMING or event.ua != self._handle:
                     return
-                call = Call(self._runtime, event)
+                call = Call._from_incoming(self._runtime, event)
                 for cb in list(self._incoming_callbacks):
                     try:
                         cb(call)

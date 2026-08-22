@@ -72,3 +72,64 @@ class UnsupportedFeatureError(BaresipError):
     accepts a parameter whose support has not shipped yet, so the caller
     finds out immediately rather than through silent omission.
     """
+
+
+def split_status(text: str) -> tuple[int | None, str]:
+    """Split a status line like ``"486 Busy Here"`` into (486, "Busy Here").
+
+    Transport-level failures carry plain error text with no status code;
+    those come back as (None, text).
+    """
+    head, _, tail = text.partition(" ")
+    if len(head) == 3 and head.isdigit():
+        return int(head), tail
+    return None, text
+
+
+class CallFailed(BaresipError):
+    """An outbound call ended without ever being established.
+
+    Busy, declined, and timeout are ordinary telephony outcomes, not
+    program errors — they arrive as the :class:`CallBusy`,
+    :class:`CallDeclined`, and :class:`CallTimeout` subclasses so callers
+    can handle each without string matching. Anything else (a 404, a
+    transport failure) raises this base class directly.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, reason: str = ""):
+        """Initialize the error.
+
+        Args:
+            message: Full human-readable description.
+            status: SIP status code when the far end answered with one;
+                None for transport-level failures and timeouts.
+            reason: The reason phrase, or the transport error text.
+        """
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+
+    @classmethod
+    def from_close_reason(cls, text: str) -> "CallFailed":
+        """The right exception for a CALL_CLOSED reason text."""
+        status, reason = split_status(text)
+        if status == 486:
+            return CallBusy(f"call failed: {text}", status=status, reason=reason)
+        if status == 603:
+            return CallDeclined(f"call failed: {text}", status=status, reason=reason)
+        return cls(f"call failed: {text or 'no reason given'}", status=status, reason=reason)
+
+
+class CallBusy(CallFailed):
+    """The far end is busy (486)."""
+
+
+class CallDeclined(CallFailed):
+    """The far end declined the call (603)."""
+
+
+class CallTimeout(CallFailed):
+    """The call was not established within the caller's timeout.
+
+    The pending call is hung up (best effort) before this is raised.
+    """

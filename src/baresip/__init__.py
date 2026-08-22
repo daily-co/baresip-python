@@ -20,6 +20,10 @@ import logging
 from baresip.config import Account, Config
 from baresip.errors import (
     BaresipError,
+    CallBusy,
+    CallDeclined,
+    CallFailed,
+    CallTimeout,
     CommandQueueFull,
     CommandTimeout,
     RegistrationError,
@@ -59,7 +63,11 @@ __all__: list[str] = [
     "Account",
     "BaresipError",
     "Call",
+    "CallBusy",
+    "CallDeclined",
+    "CallFailed",
     "CallState",
+    "CallTimeout",
     "CommandQueueFull",
     "CommandTimeout",
     "Config",

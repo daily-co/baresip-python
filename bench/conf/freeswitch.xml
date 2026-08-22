@@ -146,6 +146,17 @@
           <action application="playback" data="tone_stream://%(1000,500,440);loops=-1"/>
         </condition>
       </extension>
+      <!-- 9486 / 9603: reject before answering, for failure-path tests. -->
+      <extension name="busy">
+        <condition field="destination_number" expression="^9486$">
+          <action application="respond" data="486 Busy Here"/>
+        </condition>
+      </extension>
+      <extension name="decline">
+        <condition field="destination_number" expression="^9603$">
+          <action application="respond" data="603 Decline"/>
+        </condition>
+      </extension>
       <!-- 1001-1003: bridge to the registered user. -->
       <extension name="user">
         <condition field="destination_number" expression="^(100[123])$">

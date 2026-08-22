@@ -44,6 +44,12 @@
 #define BP_CMD_CALL_REJECT 10 /* answers 486 Busy Here */
 #define BP_CMD_CALL_HANGUP 11
 
+/* Dial out. Args: first line "HANDLE V URI" (V=1 offers video — inert
+ * while the build carries no video codecs); each further line is one
+ * "Name: value" header for the INVITE. DONE payload: {"handle":N} or
+ * {"error":...}. Progress and outcome arrive as stack events. */
+#define BP_CMD_UA_CONNECT 12
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */

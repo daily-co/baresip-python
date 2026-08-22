@@ -31,6 +31,7 @@ emulation (the image is amd64-only); that is fine at bench scale.
 | Accounts | `1001` / `1002` (humans), `1003` (automated tests), password `bench1234` |
 | `9196` | echo test — you hear yourself |
 | `9664` | playback test — a generated tone |
+| `9486`, `9603` | reject with 486 / 603 before answering (failure-path tests) |
 | `1001`-`1003` | bridges to that registered user |
 
 Tests read `BENCH_SIP_PORT` (default `15060`) rather than hardcoding the port. Overriding it

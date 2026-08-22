@@ -16,8 +16,9 @@ import pytest
 native = pytest.importorskip("baresip._native")
 
 from baresip import Account, BaresipError, StaleHandleError
+from baresip.errors import split_status
 from baresip.runtime import Runtime
-from baresip.ua import UserAgent, _parse_status
+from baresip.ua import UserAgent
 
 ACCOUNT = Account(user="alice", password="secret", domain="example.invalid")
 
@@ -71,7 +72,30 @@ async def test_create_event_carries_no_credential(runtime):
         assert "secret" not in (event.text or "")
 
 
-def test_parse_status():
-    assert _parse_status("401 Unauthorized") == (401, "Unauthorized")
-    assert _parse_status("Connection refused") == (None, "Connection refused")
-    assert _parse_status("") == (None, "")
+def test_split_status():
+    assert split_status("401 Unauthorized") == (401, "Unauthorized")
+    assert split_status("Connection refused") == (None, "Connection refused")
+    assert split_status("") == (None, "")
+
+
+async def test_dial_on_stale_handle_fails_typed(runtime):
+    ghost = UserAgent(runtime, 0xBAD0001)
+    with pytest.raises(StaleHandleError):
+        await ghost.dial("sip:9196@example.invalid")
+
+
+def test_dial_rejects_unsendable_input():
+    ua = UserAgent(Runtime(), 1)  # validation happens before any command
+    loop = __import__("asyncio").new_event_loop()
+    try:
+        for uri, headers in [
+            ("", None),
+            ("sip:a@b\nc", None),
+            ("sip:a@b", {"Bad Name": "x"}),
+            ("sip:a@b", {"X-Colon:": "x"}),
+            ("sip:a@b", {"X-Ok": "multi\nline"}),
+        ]:
+            with pytest.raises(ValueError):
+                loop.run_until_complete(ua.dial(uri, headers=headers))
+    finally:
+        loop.close()
