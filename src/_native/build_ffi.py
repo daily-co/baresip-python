@@ -111,6 +111,25 @@ void bp_log_start(void);
 void bp_log_stop(void);
 int  bp_log_read(struct bp_log_rec *rec);
 
+// The SPSC byte ring (ring.h) — a pure data structure, no loop or thread
+// ties; contracts documented in the header.
+typedef struct bp_ring bp_ring;
+
+struct bp_ring_stats {
+    uint64_t underruns;
+    uint64_t overruns;
+    uint64_t dropped;
+    uint32_t high_water;
+};
+
+bp_ring *bp_ring_alloc(uint32_t capacity);
+void     bp_ring_free(bp_ring *ring);
+uint32_t bp_ring_write(bp_ring *ring, const uint8_t *src, uint32_t len);
+uint32_t bp_ring_read(bp_ring *ring, uint8_t *dst, uint32_t len);
+uint32_t bp_ring_size(const bp_ring *ring);
+uint32_t bp_ring_capacity(const bp_ring *ring);
+void     bp_ring_stats_get(const bp_ring *ring, struct bp_ring_stats *stats);
+
 // "Python+C" (not plain "Python") so the callback gets external linkage:
 // shim.c is a separate translation unit and must be able to call it.
 extern "Python+C" void bp_event_h(int ev, uint32_t handle, const char *json);
@@ -154,7 +173,10 @@ ffi.set_source(
     # The entire C surface visible to Python is shim.h — never a raw
     # libre/libbaresip header. Keep it that way.
     '#include "shim.h"',
-    sources=[str(Path(__file__).parent / "shim.c")],
+    sources=[
+        str(Path(__file__).parent / "shim.c"),
+        str(Path(__file__).parent / "ring.c"),
+    ],
     include_dirs=[
         str(Path(__file__).parent),
         str(NATIVE_PREFIX / "include" / "re"),

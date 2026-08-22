@@ -9,6 +9,11 @@
 
 #include <stdint.h>
 
+/* Part of the surface, carried through this funnel header: the SPSC byte
+ * ring under the audio path — a pure data structure with no loop or
+ * thread ties of its own. */
+#include "ring.h"
+
 /* The C surface exposed to Python. Every function is prefixed bp_ to keep
  * our symbols distinct from libre's and libbaresip's.
  *
