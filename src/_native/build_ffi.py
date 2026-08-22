@@ -116,15 +116,26 @@ extern "Python+C" void bp_event_h(int ev, uint32_t handle, const char *json);
 """)
 
 _library_dirs: list[str] = []
-_libraries = ["ssl", "crypto", "z", "resolv", "m"]
 # libbaresip before libre: baresip depends on re, and single-pass linkers
-# resolve archives left to right. -lopus comes after both: nothing needs
-# the codec until the opus module gets pulled out of libbaresip.a, and a
-# linker that drops libraries nothing has asked for yet would discard it.
-_extra_link_args = [str(LIBBARESIP_A), str(LIBRE_A), "-lopus"]
+# resolve archives left to right. Every -l comes after both archives, in
+# extra_link_args rather than libraries=: distutils puts libraries= BEFORE
+# extra_link_args on the link line, and GNU ld's --as-needed (the Ubuntu
+# default) drops a shared library listed before the archive members that
+# need it — the symptom is an extension that links clean and then fails
+# at import with an undefined OpenSSL/opus symbol.
+_extra_link_args = [
+    str(LIBBARESIP_A),
+    str(LIBRE_A),
+    "-lopus",
+    "-lssl",
+    "-lcrypto",
+    "-lz",
+    "-lm",
+]
 
 if platform.system() == "Darwin":
     _extra_link_args += [
+        "-lresolv",
         "-framework",
         "SystemConfiguration",
         "-framework",
@@ -135,7 +146,7 @@ if platform.system() == "Darwin":
         if _dir:
             _library_dirs.append(str(_dir))
 else:
-    _libraries.append("pthread")
+    _extra_link_args += ["-lresolv", "-lpthread"]
 
 ffi.set_source(
     "baresip._native",
@@ -149,7 +160,6 @@ ffi.set_source(
         str(BARESIP_SRC / "include"),
     ],
     library_dirs=_library_dirs,
-    libraries=_libraries,
     extra_link_args=_extra_link_args,
 )
 
