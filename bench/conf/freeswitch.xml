@@ -1,0 +1,178 @@
+<?xml version="1.0"?>
+<!--
+  Minimal single-file FreeSWITCH configuration for the bench.
+
+  Deliberately not the vanilla config tree: every line here is intentional,
+  so the whole SIP peer the tests run against fits in one reviewable file.
+
+  Accounts 1001/1002 use a committed dummy password (see README.md). The
+  stack is only ever reachable on 127.0.0.1 via the compose port mappings.
+
+  NAT stance: the container sits behind Docker's port forwarding, so the
+  profile advertises 127.0.0.1 (ext-sip-ip/ext-rtp-ip) — what a client on
+  the host can actually reach — and relies on symmetric RTP/rport for the
+  return path.
+-->
+<document type="freeswitch/xml">
+  <X-PRE-PROCESS cmd="set" data="domain=127.0.0.1"/>
+  <X-PRE-PROCESS cmd="set" data="default_password=bench1234"/>
+
+  <section name="configuration" description="Configuration">
+    <configuration name="modules.conf" description="Modules">
+      <modules>
+        <load module="mod_console"/>
+        <!-- The image runs freeswitch -nc (no console), so file logging is
+             the only way to see call processing: `make bench-logs`. -->
+        <load module="mod_logfile"/>
+        <!-- status/show/uuid_*/originate — fs_cli is useless without it. -->
+        <load module="mod_commands"/>
+        <load module="mod_event_socket"/>
+        <load module="mod_sofia"/>
+        <load module="mod_dialplan_xml"/>
+        <load module="mod_dptools"/>
+        <load module="mod_tone_stream"/>
+        <load module="mod_sndfile"/>
+      </modules>
+    </configuration>
+
+    <configuration name="console.conf" description="Console logging">
+      <mappings>
+        <map name="all" value="console,debug,info,notice,warning,err,crit,alert"/>
+      </mappings>
+      <settings>
+        <param name="colorize" value="false"/>
+        <param name="loglevel" value="info"/>
+      </settings>
+    </configuration>
+
+    <configuration name="logfile.conf" description="File logging">
+      <profiles>
+        <profile name="default">
+          <settings>
+            <param name="logfile" value="/var/log/freeswitch/freeswitch.log"/>
+            <param name="rollover" value="10485760"/>
+            <param name="maximum-rotate" value="2"/>
+          </settings>
+          <mappings>
+            <map name="all" value="debug,info,notice,warning,err,crit,alert"/>
+          </mappings>
+        </profile>
+      </profiles>
+    </configuration>
+
+    <configuration name="switch.conf" description="Core">
+      <settings>
+        <!-- Must mirror the published UDP range in docker-compose.yml. -->
+        <param name="rtp-start-port" value="16384"/>
+        <param name="rtp-end-port" value="16393"/>
+        <param name="loglevel" value="info"/>
+      </settings>
+    </configuration>
+
+    <!-- Container-local only (not published): lets tests drive the switch
+         with `docker exec ... fs_cli -x "originate ..."`. -->
+    <configuration name="event_socket.conf" description="Event socket">
+      <settings>
+        <param name="listen-ip" value="127.0.0.1"/>
+        <param name="listen-port" value="8021"/>
+        <param name="password" value="ClueCon"/>
+      </settings>
+    </configuration>
+
+    <!-- An ACL that matches nothing: assigned as the profile's
+         local-network-acl so every peer counts as external and the ext-*
+         addresses below are always used. With the default localnet.auto,
+         Docker's gateway (RFC1918) counts as "local" and FreeSWITCH
+         advertises its unroutable container IP in SDP — no media. -->
+    <configuration name="acl.conf" description="Access control">
+      <network-lists>
+        <list name="bench_nowhere" default="deny"/>
+      </network-lists>
+    </configuration>
+
+    <configuration name="sofia.conf" description="SIP">
+      <global_settings>
+        <param name="log-level" value="0"/>
+      </global_settings>
+      <profiles>
+        <profile name="bench">
+          <settings>
+            <param name="sip-ip" value="$${local_ip_v4}"/>
+            <!-- Same port inside and outside the container: the Contact FS
+                 advertises (ext-sip-ip:sip-port) must be dialable from the
+                 host, and Docker can map ports but not rewrite SDP/Contact. -->
+            <param name="sip-port" value="15060"/>
+            <param name="rtp-ip" value="$${local_ip_v4}"/>
+            <param name="ext-sip-ip" value="127.0.0.1"/>
+            <param name="ext-rtp-ip" value="127.0.0.1"/>
+            <param name="local-network-acl" value="bench_nowhere"/>
+            <!-- For clients that insist on ICE: consider their private-range
+                 candidates (reachable from the container) and skip loopback
+                 ones (which are the container's own loopback, a black hole). -->
+            <param name="apply-candidate-acl" value="localnet.auto"/>
+            <param name="context" value="default"/>
+            <param name="auth-calls" value="true"/>
+            <param name="accept-blind-reg" value="false"/>
+            <param name="challenge-realm" value="auto_from"/>
+            <param name="force-register-domain" value="$${domain}"/>
+            <param name="force-register-db-domain" value="$${domain}"/>
+            <!-- Symmetric signaling/media back through Docker's forwarder. -->
+            <param name="aggressive-nat-detection" value="true"/>
+            <param name="NDLB-force-rport" value="true"/>
+            <param name="NDLB-received-in-nat-reg-contact" value="true"/>
+            <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="rtp-timer-name" value="soft"/>
+            <param name="dtmf-type" value="rfc2833"/>
+          </settings>
+        </profile>
+      </profiles>
+    </configuration>
+  </section>
+
+  <section name="dialplan" description="Dialplan">
+    <context name="default">
+      <!-- 9196: answer and echo the caller's audio back. -->
+      <extension name="echo">
+        <condition field="destination_number" expression="^9196$">
+          <action application="answer"/>
+          <action application="echo"/>
+        </condition>
+      </extension>
+      <!-- 9664: answer and play a generated tone (no sound files needed). -->
+      <extension name="playback">
+        <condition field="destination_number" expression="^9664$">
+          <action application="answer"/>
+          <action application="playback" data="tone_stream://%(1000,500,440);loops=-1"/>
+        </condition>
+      </extension>
+      <!-- 1001/1002: bridge to the registered user. -->
+      <extension name="user">
+        <condition field="destination_number" expression="^(100[12])$">
+          <action application="bridge" data="user/$1"/>
+        </condition>
+      </extension>
+    </context>
+  </section>
+
+  <section name="directory" description="User directory">
+    <domain name="$${domain}">
+      <params>
+        <param name="dial-string"
+               value="{sip_invite_domain=${dialed_domain}}${sofia_contact(${dialed_user}@${dialed_domain})}"/>
+      </params>
+      <users>
+        <user id="1001">
+          <params>
+            <param name="password" value="$${default_password}"/>
+          </params>
+        </user>
+        <user id="1002">
+          <params>
+            <param name="password" value="$${default_password}"/>
+          </params>
+        </user>
+      </users>
+    </domain>
+  </section>
+</document>

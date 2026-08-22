@@ -5,8 +5,11 @@
 #   test    - run the unit test suite
 #   check   - audit built artifacts' linkage (advisory here; CI enforces on release)
 #   format  - apply formatting to all Python and C sources
+#
+# Bench (local FreeSWITCH in docker, see bench/README.md):
+#   bench-up / bench-logs / bench-down
 
-.PHONY: native ext test check format
+.PHONY: native ext test check format bench-up bench-logs bench-down
 
 format:
 	uv run ruff format src scripts tests
@@ -23,3 +26,14 @@ test:
 
 check:
 	uv run python scripts/check_linkage.py
+
+bench-up:
+	docker compose -f bench/docker-compose.yml up -d --wait
+
+# The image runs freeswitch -nc (no console): container stdout is empty,
+# the real log is the file mod_logfile writes.
+bench-logs:
+	docker exec baresip-bench-freeswitch tail -F /var/log/freeswitch/freeswitch.log
+
+bench-down:
+	docker compose -f bench/docker-compose.yml down

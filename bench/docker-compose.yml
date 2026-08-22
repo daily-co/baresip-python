@@ -1,0 +1,32 @@
+# Local FreeSWITCH bench for integration tests and manual poking.
+#
+# Everything binds to 127.0.0.1 only, and the credentials are throwaway
+# (see README.md) — this stack must never face a network.
+#
+# The image has no arm64 build; the explicit platform makes Docker Desktop
+# run it under emulation on Apple Silicon and natively on amd64 CI.
+
+services:
+  freeswitch:
+    image: safarov/freeswitch:1.10.12
+    platform: linux/amd64
+    container_name: baresip-bench-freeswitch
+    volumes:
+      - ./conf/freeswitch.xml:/etc/freeswitch/freeswitch.xml:ro
+    ports:
+      # Non-default SIP port so the bench never collides with a real SIP
+      # agent on the machine. Tests read BENCH_SIP_PORT (default 15060).
+      # The container-side port matches conf/freeswitch.xml sip-port: the
+      # Contact/SDP addresses FS advertises must be dialable from the host,
+      # so host and container ports have to agree (overriding BENCH_SIP_PORT
+      # breaks that parity — see README).
+      - "127.0.0.1:${BENCH_SIP_PORT:-15060}:15060/udp"
+      - "127.0.0.1:${BENCH_SIP_PORT:-15060}:15060/tcp"
+      # RTP: must mirror rtp-start-port/rtp-end-port in conf/freeswitch.xml.
+      - "127.0.0.1:16384-16393:16384-16393/udp"
+    healthcheck:
+      test: ["CMD", "fs_cli", "-x", "status"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    stop_grace_period: 5s
