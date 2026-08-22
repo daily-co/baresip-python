@@ -17,6 +17,7 @@ import asyncio
 import atexit
 import contextlib
 import errno as _errno
+import json
 import logging
 import os
 import shutil
@@ -28,6 +29,7 @@ from baresip._events import set_sink
 from baresip._native import ffi, lib
 from baresip.config import Config
 from baresip.errors import BaresipError, CommandQueueFull, CommandTimeout, RuntimeDead
+from baresip.events import Event, StackEvent
 
 logger = logging.getLogger("baresip.runtime")
 
@@ -115,6 +117,7 @@ class Runtime:
         self._dropped_events = 0
         self._push_cmd = lib.bp_cmd  # indirection point, patchable in tests
         self._watchdog_task: asyncio.Task | None = None
+        self._listeners: list = []
         self.on_dead = None  # optional callable, invoked once on SIP-thread death
 
     # -- lifecycle -----------------------------------------------------------
@@ -130,9 +133,11 @@ class Runtime:
                 switch is applied once the stack is up.
         """
         sip_trace = False
+        expose_headers: tuple[str, ...] = ()
         if isinstance(config, Config):
             self._native_log_level = LOG_LEVELS[config.native_log_level]
             sip_trace = config.sip_trace
+            expose_headers = config.expose_headers
             config = config.render()
         # The parser rejects an empty buffer, so "no settings" still needs
         # something to parse.
@@ -180,6 +185,8 @@ class Runtime:
                 raise BaresipError(f"SIP thread failed to start: {detail}")
 
             self._state = "running"
+            if expose_headers:
+                await self.cmd(lib.BP_CMD_SET_EXPOSE_HEADERS, args=",".join(expose_headers))
             if sip_trace:
                 await self.set_sip_trace(True)
             self._watchdog_task = self._loop.create_task(self._watchdog())
@@ -376,12 +383,15 @@ class Runtime:
 
     # -- commands ------------------------------------------------------------
 
-    async def cmd(self, cmd_id: int, *, args: str | None = None, timeout: float | None = None):
+    async def cmd(
+        self, cmd_id: int, *, args: str | bytes | None = None, timeout: float | None = None
+    ):
         """Send a command and await its completion event.
 
         Args:
             cmd_id: One of the BP_CMD_* ids.
-            args: Argument text for commands that take one.
+            args: Argument text for commands that take one. C sees it as a
+                NUL-terminated string, so bytes must not contain NUL.
             timeout: Seconds to wait, defaulting to the runtime's.
 
         Returns:
@@ -401,9 +411,9 @@ class Runtime:
         future = self._loop.create_future()
         self._pending[seq] = future
 
-        err = self._push_cmd(
-            cmd_id, seq, ffi.NULL if args is None else ffi.new("char[]", args.encode())
-        )
+        if isinstance(args, str):
+            args = args.encode()
+        err = self._push_cmd(cmd_id, seq, ffi.NULL if args is None else ffi.new("char[]", args))
         if err:
             self._pending.pop(seq, None)
             if err == _errno.EAGAIN:
@@ -471,12 +481,61 @@ class Runtime:
                     self._dropped_events,
                 )
 
+    def subscribe(self, listener) -> None:
+        """Register ``listener(event: StackEvent)`` for every stack event.
+
+        Called on the asyncio loop; a listener that raises is logged and
+        does not affect the others.
+        """
+        self._listeners.append(listener)
+
+    def unsubscribe(self, listener) -> None:
+        """Remove a listener registered with :meth:`subscribe`."""
+        self._listeners.remove(listener)
+
     def _dispatch(self, ev: int, handle: int, payload) -> None:
+        # Two id spaces: stack events go to listeners, everything below
+        # BP_EV_BASE completes the command whose handle it carries.
+        if ev >= lib.BP_EV_BASE:
+            self._deliver_stack_event(ev, handle, payload)
+            return
         future = self._pending.pop(handle, None)
         if future is not None and not future.done():
             future.set_result((ev, payload))
             return
         logger.debug("unmatched event", extra={"event": ev, "seq": handle})
+
+    def _deliver_stack_event(self, ev: int, handle: int, payload) -> None:
+        try:
+            event = Event(ev - lib.BP_EV_BASE)
+        except ValueError:
+            # The cross-check test pins the numbering at build time, so
+            # this is unreachable short of a broken build.
+            logger.warning("unknown stack event %d dropped", ev - lib.BP_EV_BASE)
+            return
+        try:
+            data = json.loads(payload) if payload else {}
+        except ValueError:
+            logger.error("stack event %s carried unparseable payload", event.name)
+            return
+        stack_event = StackEvent(
+            event=event,
+            handle=handle,
+            ua=data.get("ua", 0),
+            call=data.get("call", 0),
+            text=data.get("text"),
+            peer=data.get("peer"),
+            call_id=data.get("call_id"),
+            from_=data.get("from"),
+            to=data.get("to"),
+            headers=data.get("headers", {}),
+            truncated=data.get("truncated", False),
+        )
+        for listener in list(self._listeners):
+            try:
+                listener(stack_event)
+            except Exception:
+                logger.exception("event listener raised on %s", event.name)
 
     # -- watchdog --------------------------------------------------------------
 

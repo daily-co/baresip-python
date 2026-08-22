@@ -142,9 +142,10 @@ class Config:
     Parameters:
         audio_driver: Audio driver as "module" or "module,device"; used for
             both capture and playback.
-        expose_headers: Reserved — allowlist of SIP header names to carry
-            in event payloads. Accepted and validated; events do not carry
-            headers yet.
+        expose_headers: Allowlist of SIP header names (an X-/P- custom
+            header, typically) whose values event payloads carry when the
+            triggering message has them. At most 16 names, each under 64
+            characters.
         native_log_level: Lowest severity captured from the native stack,
             active from its first line: "debug", "info", "warning" or
             "error".
@@ -166,8 +167,11 @@ class Config:
         # The configuration parser reads one value per line and stops at
         # whitespace, so neither can be smuggled into a value.
         _reject_chars("audio_driver", self.audio_driver, '"')
+        # The limits mirror the native allowlist's fixed capacity.
+        if len(self.expose_headers) > 16:
+            raise ValueError("expose_headers allows at most 16 names")
         for header in self.expose_headers:
-            if not _HEADER_NAME.fullmatch(header):
+            if not _HEADER_NAME.fullmatch(header) or len(header) > 63:
                 raise ValueError(f"expose_headers entry {header!r} is not a valid header name")
         if self.native_log_level not in LOG_LEVEL_NAMES:
             raise ValueError(

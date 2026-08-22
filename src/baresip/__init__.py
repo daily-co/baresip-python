@@ -19,6 +19,7 @@ import logging
 
 from baresip.config import Account, Config
 from baresip.errors import BaresipError, CommandQueueFull, CommandTimeout, RuntimeDead
+from baresip.events import Event, StackEvent
 
 # Library convention: log into the "baresip" hierarchy, emit nothing unless
 # the application configures handlers.
@@ -47,6 +48,8 @@ __all__: list[str] = [
     "CommandQueueFull",
     "CommandTimeout",
     "Config",
+    "Event",
     "Runtime",
     "RuntimeDead",
+    "StackEvent",
 ]

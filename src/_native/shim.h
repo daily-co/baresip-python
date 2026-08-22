@@ -23,12 +23,37 @@
 /* Command ids accepted by bp_cmd. */
 #define BP_CMD_PING 1
 #define BP_CMD_STOP 2
-#define BP_CMD_SET_LOG_LEVEL 3 /* json_args: a BP_LOG_* value, in decimal */
-#define BP_CMD_SET_SIP_TRACE 4 /* json_args: "1" to enable, "0" to disable */
+#define BP_CMD_SET_LOG_LEVEL 3      /* json_args: a BP_LOG_* value, in decimal */
+#define BP_CMD_SET_SIP_TRACE 4      /* json_args: "1" to enable, "0" to disable */
+#define BP_CMD_SET_EXPOSE_HEADERS 5 /* json_args: comma-separated header names */
 
-/* Event ids delivered to bp_event_h. */
+/* Test-only commands: fixed inputs in, observable events out, so the paths
+ * under them — the JSON encoder, the handle table, header extraction — are
+ * testable without network traffic. Harmless if sent in production. */
+#define BP_CMD_TEST_EMIT 100         /* json_args: a raw SIP message */
+#define BP_CMD_TEST_ESCAPE 101       /* json_args: bytes for the JSON encoder */
+#define BP_CMD_TEST_HANDLE_NEW 102   /* allocates a dummy table entry */
+#define BP_CMD_TEST_HANDLE_DROP 103  /* json_args: a handle, in decimal */
+#define BP_CMD_TEST_HANDLE_PROBE 104 /* json_args: a handle, in decimal */
+
+/* Event ids delivered to bp_event_h.
+ *
+ * Ids below BP_EV_BASE complete a command: their handle is the command's
+ * handle, and they resolve whoever is waiting on it. Ids at or above
+ * BP_EV_BASE are stack events: BP_EV_BASE plus the stack's own event
+ * number, their handle names the object they concern (0 for none), and
+ * their json payload carries the details. */
 #define BP_EV_PONG 1
-#define BP_EV_DONE 2 /* a command that carries no result finished */
+#define BP_EV_DONE 2         /* a command that carries no result finished */
+#define BP_EV_STALE_HANDLE 3 /* the command named an object that no longer exists */
+#define BP_EV_BASE 1000
+
+/* The stack's event numbering as actually compiled, for the cross-check
+ * against the Python side: the numbers are bare enum positions upstream
+ * has historically inserted into, so a mismatch after a version bump must
+ * fail a test — not silently relabel every event. */
+int bp_bevent_max(void);
+const char *bp_bevent_str(int ev);
 
 /* Severity of a native log line. The stack underneath has two logging
  * systems with different scales; both are mapped onto these four. */
@@ -108,7 +133,24 @@ int bp_loop_done(void);
 int bp_cmd(int cmd, uint32_t handle, const char *json_args);
 
 /* Event funnel out to Python; implemented by cffi (extern "Python+C"),
- * always invoked on the re thread. json may be NULL. */
+ * always invoked on the re thread. json may be NULL.
+ *
+ * Stack events (BP_EV_BASE and up) carry a JSON payload built natively:
+ * the event name, the object handles concerned, and — when the event has a
+ * SIP message — peer URI, From, To, Call-ID, and any header the configured
+ * allowlist names. Every value in it originates on the network, so the
+ * encoder escapes byte by byte (invalid UTF-8 included), caps each value,
+ * and marks the payload "truncated" when it had to cut. The payload is
+ * always valid JSON.
+ *
+ * Handles: Python refers to stack objects by 32-bit handle, never by
+ * pointer. A handle packs a table slot with a generation counter; the slot
+ * keeps a reference on the object, and lookups validate type and
+ * generation, so a handle kept past its object's end fails typed
+ * (BP_EV_STALE_HANDLE) instead of dereferencing freed memory. The
+ * generation is 8 bits: a handle held across exactly 256 reuses of one
+ * slot would validate falsely, which we accept and test for rather than
+ * hide. */
 void bp_event_h(int ev, uint32_t handle, const char *json);
 
 /* Native log capture.

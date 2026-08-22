@@ -320,6 +320,404 @@ static void bp_emit(int ev, uint32_t handle, const char *json)
     bp_event_h(ev, handle, json);
 }
 
+/* -- handle table ----------------------------------------------------------
+ *
+ * Python refers to stack objects by handle, never by pointer: a pointer
+ * held by Python outlives whatever C decides to free, and that is the
+ * use-after-free class this table exists to end. A handle packs a slot
+ * index with an 8-bit generation; the slot keeps its own reference on the
+ * object, and a lookup validates type and generation, so a stale handle
+ * fails typed instead of dereferencing. Freeing a slot bumps its
+ * generation, which is what invalidates every handle already issued for
+ * it. The generation wraps at 256 — a handle held across exactly 256
+ * reuses of one slot validates falsely; accepted, and pinned by a test.
+ *
+ * Everything here runs on the re thread only.
+ */
+
+#define BP_HANDLE_SLOTS 1024 /* slot 0 stays empty: handle 0 means "none" */
+
+enum bp_obj_type {
+    BP_OBJ_NONE = 0,
+    BP_OBJ_UA,
+    BP_OBJ_CALL,
+    BP_OBJ_TEST,
+};
+
+struct bp_slot {
+    void *ptr; /* holds a reference; NULL = slot free */
+    enum bp_obj_type type;
+    uint8_t gen;
+};
+
+static struct bp_slot g_slots[BP_HANDLE_SLOTS];
+
+static uint32_t handle_pack(uint32_t idx, uint8_t gen)
+{
+    return ((uint32_t)gen << 24) | idx;
+}
+
+/* The handle for ptr, creating a table entry if it has none. 0 = table
+ * full, which is loud: it means more live objects than the table was
+ * sized for, and events for the overflow object cannot be correlated. */
+static uint32_t handle_create(void *ptr, enum bp_obj_type type)
+{
+    uint32_t i;
+
+    if (!ptr)
+        return 0;
+
+    for (i = 1; i < BP_HANDLE_SLOTS; i++) {
+        if (g_slots[i].ptr == ptr)
+            return handle_pack(i, g_slots[i].gen);
+    }
+    for (i = 1; i < BP_HANDLE_SLOTS; i++) {
+        if (!g_slots[i].ptr) {
+            g_slots[i].ptr = mem_ref(ptr);
+            g_slots[i].type = type;
+            return handle_pack(i, g_slots[i].gen);
+        }
+    }
+    fprintf(stderr, "baresip shim: handle table full (%d slots)\n", BP_HANDLE_SLOTS - 1);
+    return 0;
+}
+
+static void *handle_lookup(uint32_t handle, enum bp_obj_type type)
+{
+    uint32_t idx = handle & 0xFFFFFF;
+    uint8_t gen = (uint8_t)(handle >> 24);
+    struct bp_slot *slot;
+
+    if (!idx || idx >= BP_HANDLE_SLOTS)
+        return NULL;
+    slot = &g_slots[idx];
+    if (!slot->ptr || slot->type != type || slot->gen != gen)
+        return NULL;
+    return slot->ptr;
+}
+
+static void slot_clear(uint32_t idx)
+{
+    g_slots[idx].ptr = mem_deref(g_slots[idx].ptr);
+    g_slots[idx].type = BP_OBJ_NONE;
+    g_slots[idx].gen++; /* wraps at 256 by design */
+}
+
+/* Only two callers may free a slot: CLOSED-event processing (here) and
+ * the teardown drain — anything else would reopen the question of who
+ * invalidates whom. */
+static void handle_drop_ptr(void *ptr)
+{
+    uint32_t i;
+
+    for (i = 1; i < BP_HANDLE_SLOTS; i++) {
+        if (g_slots[i].ptr == ptr) {
+            slot_clear(i);
+            return;
+        }
+    }
+}
+
+static void handle_drain(void)
+{
+    uint32_t i;
+
+    for (i = 1; i < BP_HANDLE_SLOTS; i++) {
+        if (g_slots[i].ptr)
+            slot_clear(i);
+    }
+}
+
+/* -- event payloads ---------------------------------------------------------
+ *
+ * Stack events carry a JSON object built here. Everything quoted into it
+ * comes off the network — not guaranteed UTF-8, possibly hostile, possibly
+ * huge — so the writer escapes byte by byte, caps each value, cuts only at
+ * a code-point boundary, and marks the payload when it cut. The output is
+ * valid JSON, every time; a payload that would overflow the buffer is
+ * replaced by a minimal one rather than emitted malformed.
+ */
+
+#define BP_JSON_MAX 16384
+#define BP_JSON_VALUE_MAX 1024 /* input bytes per quoted value */
+
+struct jw {
+    char buf[BP_JSON_MAX];
+    size_t len;
+    bool overflow;
+    bool truncated;
+};
+
+static void jw_putc(struct jw *w, char c)
+{
+    if (w->len + 1 >= sizeof(w->buf)) {
+        w->overflow = true;
+        return;
+    }
+    w->buf[w->len++] = c;
+}
+
+static void jw_puts(struct jw *w, const char *s)
+{
+    while (*s)
+        jw_putc(w, *s++);
+}
+
+/* Length of the valid UTF-8 sequence at p (at most n bytes), or 0 if the
+ * bytes there are not one. The second-byte constraints matter: overlong
+ * forms and surrogates are not valid UTF-8, and one of them passed
+ * through would make the whole payload undecodable on the Python side. */
+static size_t utf8_seq(const uint8_t *p, size_t n)
+{
+    uint8_t b = p[0];
+    size_t need, i;
+
+    if (b >= 0xC2 && b <= 0xDF)
+        need = 2;
+    else if (b >= 0xE0 && b <= 0xEF)
+        need = 3;
+    else if (b >= 0xF0 && b <= 0xF4)
+        need = 4;
+    else
+        return 0;
+    if (n < need)
+        return 0;
+
+    if (b == 0xE0 && (p[1] < 0xA0 || p[1] > 0xBF))
+        return 0;
+    if (b == 0xED && (p[1] < 0x80 || p[1] > 0x9F))
+        return 0;
+    if (b == 0xF0 && (p[1] < 0x90 || p[1] > 0xBF))
+        return 0;
+    if (b == 0xF4 && (p[1] < 0x80 || p[1] > 0x8F))
+        return 0;
+
+    for (i = 1; i < need; i++) {
+        if (p[i] < 0x80 || p[i] > 0xBF)
+            return 0;
+    }
+    return need;
+}
+
+/* Append a quoted JSON string from raw bytes. At most cap input bytes are
+ * consumed; a cut never lands inside a code point or an escape. Invalid
+ * bytes become \u00XX — the byte value is preserved, nothing is dropped,
+ * and the result still decodes. */
+static void jw_quote(struct jw *w, const char *s, size_t n, size_t cap)
+{
+    const uint8_t *p = (const uint8_t *)s;
+    size_t i = 0;
+    char esc[8];
+
+    jw_putc(w, '"');
+    while (i < n) {
+        uint8_t b = p[i];
+        size_t seq;
+
+        if (i >= cap) {
+            w->truncated = true;
+            break;
+        }
+        if (b == '"' || b == '\\') {
+            jw_putc(w, '\\');
+            jw_putc(w, (char)b);
+            i++;
+        } else if (b < 0x20 || b == 0x7F) {
+            re_snprintf(esc, sizeof(esc), "\\u%04x", b);
+            jw_puts(w, esc);
+            i++;
+        } else if (b < 0x80) {
+            jw_putc(w, (char)b);
+            i++;
+        } else if ((seq = utf8_seq(p + i, n - i)) > 0) {
+            if (i + seq > cap) { /* would cut mid code point */
+                w->truncated = true;
+                break;
+            }
+            while (seq--)
+                jw_putc(w, (char)p[i++]);
+        } else {
+            re_snprintf(esc, sizeof(esc), "\\u%04x", b);
+            jw_puts(w, esc);
+            i++;
+        }
+    }
+    jw_putc(w, '"');
+}
+
+static void jw_key(struct jw *w, const char *key)
+{
+    if (w->len > 1) /* past the opening brace: needs a separator */
+        jw_putc(w, ',');
+    jw_puts(w, "\"");
+    jw_puts(w, key);
+    jw_puts(w, "\":");
+}
+
+static void jw_kv_str(struct jw *w, const char *key, const char *val)
+{
+    jw_key(w, key);
+    jw_quote(w, val, strlen(val), BP_JSON_VALUE_MAX);
+}
+
+static void jw_kv_pl(struct jw *w, const char *key, const struct pl *val)
+{
+    jw_key(w, key);
+    jw_quote(w, val->p, val->l, BP_JSON_VALUE_MAX);
+}
+
+static void jw_kv_u32(struct jw *w, const char *key, uint32_t val)
+{
+    char num[16];
+
+    jw_key(w, key);
+    re_snprintf(num, sizeof(num), "%u", val);
+    jw_puts(w, num);
+}
+
+/* -- stack event trampoline -------------------------------------------------
+ *
+ * One handler receives every event the stack emits and forwards it as
+ * BP_EV_BASE + the stack's own number, with the JSON payload above. The
+ * handle names the most specific object: the call when there is one, else
+ * the user agent, else 0.
+ */
+
+/* Header allowlist for event payloads, set via BP_CMD_SET_EXPOSE_HEADERS.
+ * Owned by the re thread. */
+#define BP_EXPOSE_MAX 16
+#define BP_EXPOSE_NAME_MAX 64
+static char g_expose[BP_EXPOSE_MAX][BP_EXPOSE_NAME_MAX];
+static size_t g_expose_n = 0;
+
+static void expose_headers_set(const char *csv)
+{
+    const char *p = csv;
+
+    g_expose_n = 0;
+    while (p && *p) {
+        const char *end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+
+        if (g_expose_n >= BP_EXPOSE_MAX || len >= BP_EXPOSE_NAME_MAX) {
+            /* The Python side enforces the same limits; hitting this
+             * means the two disagree. */
+            fprintf(stderr, "baresip shim: header allowlist entry rejected\n");
+        } else if (len) {
+            memcpy(g_expose[g_expose_n], p, len);
+            g_expose[g_expose_n][len] = '\0';
+            g_expose_n++;
+        }
+        p = end ? end + 1 : NULL;
+    }
+}
+
+static void emit_stack_event(int ev, struct ua *ua, struct call *call, const struct sip_msg *msg,
+                             const char *text)
+{
+    static struct jw w; /* re thread only; too large for the stack */
+    uint32_t ua_handle = handle_create(ua, BP_OBJ_UA);
+    uint32_t call_handle = handle_create(call, BP_OBJ_CALL);
+    size_t i;
+
+    w.len = 0;
+    w.overflow = false;
+    w.truncated = false;
+
+    jw_putc(&w, '{');
+    jw_kv_str(&w, "event", bp_bevent_str(ev));
+    if (text && *text)
+        jw_kv_str(&w, "text", text);
+    if (ua_handle)
+        jw_kv_u32(&w, "ua", ua_handle);
+    if (call_handle) {
+        const char *peer = call_peeruri(call);
+        const char *id = call_id(call);
+
+        jw_kv_u32(&w, "call", call_handle);
+        if (peer)
+            jw_kv_str(&w, "peer", peer);
+        if (id)
+            jw_kv_str(&w, "call_id", id);
+    }
+    if (msg) {
+        if (!call && pl_isset(&msg->callid))
+            jw_kv_pl(&w, "call_id", &msg->callid);
+        if (pl_isset(&msg->from.auri))
+            jw_kv_pl(&w, "from", &msg->from.auri);
+        if (pl_isset(&msg->to.auri))
+            jw_kv_pl(&w, "to", &msg->to.auri);
+        if (g_expose_n) {
+            bool open = false;
+
+            for (i = 0; i < g_expose_n; i++) {
+                const struct sip_hdr *hdr = sip_msg_xhdr(msg, g_expose[i]);
+
+                if (!hdr)
+                    continue;
+                if (!open) {
+                    jw_key(&w, "headers");
+                    jw_putc(&w, '{');
+                    open = true;
+                } else
+                    jw_putc(&w, ',');
+                jw_quote(&w, g_expose[i], strlen(g_expose[i]), BP_JSON_VALUE_MAX);
+                jw_putc(&w, ':');
+                jw_quote(&w, hdr->val.p, hdr->val.l, BP_JSON_VALUE_MAX);
+            }
+            if (open)
+                jw_putc(&w, '}');
+        }
+    }
+    if (w.truncated) {
+        jw_key(&w, "truncated");
+        jw_puts(&w, "true");
+    }
+    jw_putc(&w, '}');
+
+    if (w.overflow) {
+        /* Never emit malformed JSON: fall back to the bare minimum. */
+        w.len = 0;
+        w.overflow = false;
+        jw_putc(&w, '{');
+        jw_kv_str(&w, "event", bp_bevent_str(ev));
+        jw_key(&w, "overflow");
+        jw_puts(&w, "true");
+        jw_putc(&w, '}');
+    }
+    w.buf[w.len] = '\0';
+
+    bp_emit(BP_EV_BASE + ev, call_handle ? call_handle : ua_handle, w.buf);
+}
+
+/* RE THREAD. */
+static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
+{
+    struct ua *ua = bevent_get_ua(event);
+    struct call *call = bevent_get_call(event);
+    const struct sip_msg *msg = bevent_get_msg(event);
+    const char *text = bevent_get_text(event);
+
+    (void)arg;
+
+    emit_stack_event(ev, ua, call, msg, text);
+
+    /* The call is over: no later event can reference it, so this is one
+     * of the two places allowed to free its slot. */
+    if (ev == BEVENT_CALL_CLOSED && call)
+        handle_drop_ptr(call);
+}
+
+int bp_bevent_max(void)
+{
+    return BEVENT_MAX;
+}
+
+const char *bp_bevent_str(int ev)
+{
+    return bevent_str((enum bevent_ev)ev);
+}
+
 /* RE THREAD. The single dispatch funnel: every command the binding ever
  * grows is one new case here. */
 static void cmd_handler(int id, void *data, void *arg)
@@ -356,6 +754,86 @@ static void cmd_handler(int id, void *data, void *arg)
         if (sip)
             sip_set_trace_handler(sip, on ? bp_sip_trace_h : NULL);
         bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
+    case BP_CMD_SET_EXPOSE_HEADERS:
+        expose_headers_set(msg->json ? msg->json : "");
+        bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+
+    case BP_CMD_TEST_EMIT: {
+        /* Decode a canned SIP message and run it through the very same
+         * payload path a real event takes — header extraction included. */
+        struct sip_msg *smsg = NULL;
+        struct mbuf *mb = mbuf_alloc(msg->json ? strlen(msg->json) : 1);
+        int err = ENOMEM;
+
+        if (mb && msg->json) {
+            err = mbuf_write_str(mb, msg->json);
+            mb->pos = 0;
+            if (!err)
+                err = sip_msg_decode(&smsg, mb);
+        }
+        if (!err)
+            emit_stack_event(BEVENT_CUSTOM, NULL, NULL, smsg, NULL);
+        bp_emit(BP_EV_DONE, msg->handle, err ? "{\"error\":\"decode\"}" : NULL);
+        mem_deref(smsg);
+        mem_deref(mb);
+        break;
+    }
+
+    case BP_CMD_TEST_ESCAPE: {
+        /* The JSON encoder, driven directly: whatever bytes came in, the
+         * reply payload must parse. */
+        static struct jw w;
+
+        w.len = 0;
+        w.overflow = false;
+        w.truncated = false;
+        jw_putc(&w, '{');
+        jw_key(&w, "fuzz");
+        jw_quote(&w, msg->json ? msg->json : "", msg->json ? strlen(msg->json) : 0,
+                 BP_JSON_VALUE_MAX);
+        if (w.truncated) {
+            jw_key(&w, "truncated");
+            jw_puts(&w, "true");
+        }
+        jw_putc(&w, '}');
+        w.buf[w.len] = '\0';
+        bp_emit(BP_EV_DONE, msg->handle, w.buf);
+        break;
+    }
+
+    case BP_CMD_TEST_HANDLE_NEW: {
+        void *obj = mem_zalloc(1, NULL);
+        uint32_t h = handle_create(obj, BP_OBJ_TEST);
+        char json[32];
+
+        mem_deref(obj); /* the slot's reference keeps it alive */
+        re_snprintf(json, sizeof(json), "{\"handle\":%u}", h);
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
+    case BP_CMD_TEST_HANDLE_DROP: {
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
+
+        if (handle_lookup(h, BP_OBJ_TEST)) {
+            slot_clear(h & 0xFFFFFF);
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
+        } else
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+        break;
+    }
+
+    case BP_CMD_TEST_HANDLE_PROBE: {
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
+
+        if (handle_lookup(h, BP_OBJ_TEST))
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
+        else
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
         break;
     }
 
@@ -407,6 +885,11 @@ static void loop_unwind(enum bp_stage stage)
 
         if (sip)
             sip_set_trace_handler(sip, NULL);
+        bevent_unregister(bp_bevent_h);
+        /* The teardown drain: the second of the two places allowed to free
+         * handle slots. Our references go first, so ua_close can actually
+         * free what it tears down. */
+        handle_drain();
         ua_close();
         module_app_unload();
     }
@@ -485,6 +968,11 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
 
     stage = BP_STAGE_UA;
     err = ua_init(BP_SOFTWARE, true, true, true);
+    if (err)
+        goto out;
+
+    g_expose_n = 0; /* the header allowlist does not survive into a new run */
+    err = bevent_register(bp_bevent_h, NULL);
     if (err)
         goto out;
 
