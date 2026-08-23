@@ -76,6 +76,7 @@ ffi.cdef("""
 #define BP_EV_DONE ...
 #define BP_EV_STALE_HANDLE ...
 #define BP_EV_BASE ...
+#define BP_EV_AUDIO_WARNING ...
 
 int bp_bevent_max(void);
 const char *bp_bevent_str(int ev);
@@ -136,6 +137,19 @@ struct bp_audio_info {
 int bp_audio_probe(uint32_t call_handle, struct bp_audio_info *info);
 int32_t bp_audio_write(uint32_t call_handle, uint32_t epoch, const uint8_t *src, uint32_t len);
 int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32_t len);
+
+struct bp_audio_stats {
+    uint32_t epoch;
+    uint32_t tx_fill, tx_high_water;
+    uint32_t rx_fill, rx_high_water;
+    uint64_t tx_silence_frames;
+    uint64_t tx_starved_frames;
+    uint64_t tx_rejected;
+    uint64_t rx_dropped;
+    uint64_t rx_discarded;
+};
+
+int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out);
 
 bp_ring *bp_ring_alloc(uint32_t capacity);
 void     bp_ring_free(bp_ring *ring);

@@ -23,7 +23,7 @@ import logging
 import os
 
 from baresip._native import lib
-from baresip.audio import CallAudio
+from baresip.audio import AudioWarning, CallAudio
 from baresip.errors import (
     BaresipError,
     CallFailed,
@@ -86,6 +86,9 @@ class Call:
         self._close_reason: str | None = None
         self._audio: CallAudio | None = None
         self._listeners: list = []
+        # on_audio_warning registers a wrapper, not the callback itself;
+        # this maps callback -> wrapper so off_audio_warning can find it.
+        self._warning_adapters: dict = {}
         self.peer = peer
         self.call_id = call_id
         self.headers = dict(headers) if headers else {}
@@ -255,3 +258,35 @@ class Call:
         """Stop delivering events to ``listener``. Unknown listeners are ignored."""
         if listener in self._listeners:
             self._listeners.remove(listener)
+
+    def on_audio_warning(self, callback) -> None:
+        """Deliver this call's audio health warnings to ``callback``.
+
+        The stack samples the call's audio once per second and reports
+        damage done by the application's pacing, at most one warning per
+        direction per second: transmit audio ran dry mid-stream (the
+        application is not feeding fast enough — being silent on purpose
+        never warns), or received audio was lost after the application
+        had started reading (never reading at all is equally deliberate,
+        and warns no more than never writing does). The counters behind
+        the warnings are available any time from ``call.audio.stats()``.
+
+        Args:
+            callback: Called with an :class:`~baresip.audio.AudioWarning`.
+                Same delivery contract as :meth:`on`.
+        """
+
+        def adapter(event: StackEvent) -> None:
+            if event.event is Event.AUDIO_WARNING and event.text:
+                direction = "tx" if event.text.startswith("transmit") else "rx"
+                callback(AudioWarning(direction=direction, message=event.text))
+
+        self._warning_adapters[callback] = adapter
+        self.on(adapter)
+
+    def off_audio_warning(self, callback) -> None:
+        """Stop delivering audio warnings to ``callback``. Unknown callbacks
+        are ignored."""
+        adapter = self._warning_adapters.pop(callback, None)
+        if adapter is not None:
+            self.off(adapter)

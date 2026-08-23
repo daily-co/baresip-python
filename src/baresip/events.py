@@ -22,9 +22,19 @@ execution ships.
 from dataclasses import dataclass, field
 from enum import IntEnum
 
+#: Members numbered here and above originate in the binding's own shim,
+#: not in the stack — the numbering cross-check against the compiled
+#: stack applies only to members below this.
+SHIM_EVENT_BASE = 900
+
 
 class Event(IntEnum):
-    """Everything the stack can report, by name."""
+    """Everything the stack can report, by name.
+
+    Members below :data:`SHIM_EVENT_BASE` mirror the stack's enum member
+    for member; the rest are the binding's own events, delivered through
+    the same channel.
+    """
 
     REGISTERING = 0
     REGISTER_OK = 1
@@ -64,6 +74,10 @@ class Event(IntEnum):
     CUSTOM = 35
     SIPSESS_CONN = 36
     SIPSESS_FAILED = 37
+
+    #: A call's audio is being damaged by the application's pacing;
+    #: see :meth:`Call.on_audio_warning <baresip.call.Call.on_audio_warning>`.
+    AUDIO_WARNING = 900
 
 
 @dataclass(frozen=True)

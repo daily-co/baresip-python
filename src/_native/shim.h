@@ -76,6 +76,24 @@
 #define BP_EV_STALE_HANDLE 3 /* the command named an object that no longer exists */
 #define BP_EV_BASE 1000
 
+/* Shim-origin stack events. They travel exactly like the stack's own
+ * events (id = BP_EV_BASE + number, handle = the object concerned, JSON
+ * payload) but the numbers are ours, starting at 900 — far above
+ * anything the stack's enum can plausibly grow to, so the two spaces
+ * never collide.
+ *
+ * BP_EV_AUDIO_WARNING: a call's audio is being damaged by the
+ * application's pacing — transmit fed too slowly mid-stream, or receive
+ * not being read. Sampled once per second per call and rate-limited to
+ * one event per direction per sample, so a starved 20 ms cadence cannot
+ * flood the event channel. A direction the application never uses is a
+ * choice, not a fault: writing nothing transmits silence without
+ * warning, and receive warnings are emitted only once the application
+ * has read from the call at all (the drops still count in the stats).
+ * Payload: {"call":N,"text":message}, where the message begins with
+ * "transmit:" or "receive:". */
+#define BP_EV_AUDIO_WARNING 900
+
 /* The stack's event numbering as actually compiled, for the cross-check
  * against the Python side: the numbers are bare enum positions upstream
  * has historically inserted into, so a mismatch after a version bump must
@@ -249,5 +267,38 @@ struct bp_audio_info {
 int bp_audio_probe(uint32_t call_handle, struct bp_audio_info *info);
 int32_t bp_audio_write(uint32_t call_handle, uint32_t epoch, const uint8_t *src, uint32_t len);
 int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32_t len);
+
+/* Audio health counters, per call, cumulative for the current streams
+ * (they reset when a renegotiation replaces a direction — same lifetime
+ * the epoch tracks).
+ *
+ * Transmit is fed by Python and drained by a pacing thread one frame
+ * per ptime. An empty ring at a tick sends a frame of silence and counts
+ * in tx_silence_frames — that is idle, not an error: an application
+ * that has nothing to say writes nothing. A tick that found *some* bytes
+ * but not a full frame counts in tx_starved_frames: audio was flowing
+ * and ran dry mid-stream, the signature of a writer that cannot keep
+ * pace. The once-per-second health sampler warns on starved frames only.
+ *
+ * Receive loses data two ways, both warned on: rx_dropped bytes were
+ * rejected at the tap because the ring was full (nothing is reading),
+ * and rx_discarded bytes were skipped by the reader-side catch-up
+ * (something is reading, but too far behind). tx_rejected counts bytes
+ * bp_audio_write could not take — the caller already sees that in the
+ * return value; it is repeated here so one snapshot tells the whole
+ * story. */
+struct bp_audio_stats {
+    uint32_t epoch;
+    uint32_t tx_fill, tx_high_water;
+    uint32_t rx_fill, rx_high_water;
+    uint64_t tx_silence_frames;
+    uint64_t tx_starved_frames;
+    uint64_t tx_rejected;
+    uint64_t rx_dropped;
+    uint64_t rx_discarded;
+};
+
+/* Fill `out` and return 0, or ENOENT as bp_audio_probe. Any thread. */
+int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out);
 
 #endif /* BP_SHIM_H */

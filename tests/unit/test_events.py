@@ -20,6 +20,7 @@ import random
 import pytest
 
 from baresip import Config, Event
+from baresip.events import SHIM_EVENT_BASE
 
 native = pytest.importorskip("baresip._native")
 ffi = native.ffi
@@ -53,11 +54,22 @@ SIP_MESSAGE = (
 def test_event_numbering_matches_the_compiled_stack():
     """The numbers are bare enum positions upstream has inserted into
     before. Both an insertion (names shift) and an addition (count grows)
-    must fail here, forcing the enum to be re-verified on every bump."""
-    assert lib.bp_bevent_max() == len(Event)
-    for member in Event:
+    must fail here, forcing the enum to be re-verified on every bump.
+    Members at SHIM_EVENT_BASE and above are the binding's own events —
+    absent from the stack's enum by definition, checked separately."""
+    mirrored = [member for member in Event if member.value < SHIM_EVENT_BASE]
+    assert lib.bp_bevent_max() == len(mirrored)
+    for member in mirrored:
         compiled = ffi.string(lib.bp_bevent_str(member.value)).decode()
         assert compiled == STR_ALIASES.get(member.name, member.name), member
+
+
+def test_shim_event_numbering_matches_the_compiled_shim():
+    """The shim-origin events: Python and C must agree on the numbers,
+    and they must sit above everything the stack's enum could reach."""
+    assert Event.AUDIO_WARNING.value == lib.BP_EV_AUDIO_WARNING
+    assert Event.AUDIO_WARNING.value >= SHIM_EVENT_BASE
+    assert lib.bp_bevent_max() < SHIM_EVENT_BASE
 
 
 async def test_typed_delivery_with_header_extraction():

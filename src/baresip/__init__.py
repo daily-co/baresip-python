@@ -46,6 +46,8 @@ __version__ = "0.0.0.dev0"
 # tooling — works before the extension is compiled.
 _NATIVE_BACKED = {
     "AudioInfo": "baresip.audio",
+    "AudioStats": "baresip.audio",
+    "AudioWarning": "baresip.audio",
     "Call": "baresip.call",
     "CallAudio": "baresip.audio",
     "CallState": "baresip.call",
@@ -68,6 +70,8 @@ __all__: list[str] = [
     "AudioInfo",
     "AudioNotActive",
     "AudioRestarted",
+    "AudioStats",
+    "AudioWarning",
     "BaresipError",
     "Call",
     "CallAudio",

@@ -65,6 +65,18 @@
 #define BP_AUDIO_CLAMP_TRIGGER_DIV 2
 #define BP_AUDIO_CLAMP_KEEP_DIV 4
 
+/* Health sampling: a re-thread timer walks the slots once per second and
+ * emits at most one BP_EV_AUDIO_WARNING per direction per tick. Transmit
+ * warns only past a few starved (mid-stream short) frames in the window:
+ * a lone partial frame is the normal tail of a clip ending on an odd
+ * byte count, a repeated one is a writer that cannot keep pace. Receive
+ * warns only once the application has read from the call at all — the
+ * tap runs under every player, so an application consuming audio through
+ * a real device never touches read(), and the resulting full ring is a
+ * direction deliberately unused, not a reader failing to keep up. */
+#define BP_AUDIO_HEALTH_MS 1000
+#define BP_AUDIO_TX_STARVED_MIN 3
+
 struct bp_audio_slot {
     uint32_t call_handle; /* 0 = slot free */
     uint32_t epoch;       /* bumped on every unpublish */
@@ -72,6 +84,18 @@ struct bp_audio_slot {
     bp_ring *rx;          /* decode filter writes, Python reads */
     uint32_t tx_srate, tx_ch, tx_ptime;
     uint32_t rx_srate, rx_ch;
+
+    /* Health counters, current-stream lifetime (zeroed on unpublish,
+     * like the ring they describe). Written under g_audio_lock. */
+    uint64_t tx_silence_frames; /* pacing ticks that found nothing: idle */
+    uint64_t tx_starved_frames; /* ticks that ran short mid-frame: late writer */
+    uint64_t rx_discarded;      /* bytes the reader-side catch-up skipped */
+    bool rx_armed;              /* the app has read: receive warnings earned */
+
+    /* The health sampler's previous snapshots, for per-window deltas. */
+    uint64_t prev_tx_starved;
+    uint64_t prev_rx_dropped;
+    uint64_t prev_rx_discarded;
 };
 
 static struct ausrc *g_ausrc;
@@ -139,10 +163,19 @@ static void slot_unpublish(uint32_t call_handle, bp_ring *ring)
     mtx_lock(&g_audio_lock);
     slot = slot_find(call_handle);
     if (slot) {
-        if (slot->tx == ring)
+        if (slot->tx == ring) {
             slot->tx = NULL;
-        if (slot->rx == ring)
+            slot->tx_silence_frames = 0;
+            slot->tx_starved_frames = 0;
+            slot->prev_tx_starved = 0;
+        }
+        if (slot->rx == ring) {
             slot->rx = NULL;
+            slot->rx_discarded = 0;
+            slot->prev_rx_dropped = 0;
+            slot->prev_rx_discarded = 0;
+            slot->rx_armed = false;
+        }
         slot->epoch++;
     }
     mtx_unlock(&g_audio_lock);
@@ -211,8 +244,26 @@ static int src_thread(void *v)
         int dt;
 
         got = bp_ring_read(st->ring, st->sampv, (uint32_t)st->frame_bytes);
-        if (got < st->frame_bytes)
+        if (got < st->frame_bytes) {
+            struct bp_audio_slot *slot;
+
             memset((uint8_t *)st->sampv + got, 0, st->frame_bytes - got);
+
+            /* Health accounting, on short ticks only — the healthy
+             * full-frame path never touches the lock. Empty is idle
+             * (silence is what an app with nothing to say wants);
+             * partial means audio was flowing and ran dry mid-frame. */
+            call_once(&g_audio_lock_once, audio_lock_init);
+            mtx_lock(&g_audio_lock);
+            slot = slot_find(st->call_handle);
+            if (slot) {
+                if (got)
+                    slot->tx_starved_frames++;
+                else
+                    slot->tx_silence_frames++;
+            }
+            mtx_unlock(&g_audio_lock);
+        }
 
         auframe_init(&af, st->prm.fmt, st->sampv, st->sampc, st->prm.srate, st->prm.ch);
         af.timestamp = t * 1000;
@@ -587,8 +638,12 @@ int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32
         uint32_t cap = bp_ring_capacity(slot->rx);
         uint32_t fill = bp_ring_size(slot->rx);
 
+        slot->rx_armed = true;
+
         /* Drop-oldest, done on the consumer side where SPSC allows it:
-         * discard into dst, which the real read below overwrites. */
+         * discard into dst, which the real read below overwrites. The
+         * ring cannot tell these reads from real ones, so the discard
+         * is counted here — it is the drop the stats exist for. */
         if (fill > cap / BP_AUDIO_CLAMP_TRIGGER_DIV) {
             uint32_t excess = fill - cap / BP_AUDIO_CLAMP_KEEP_DIV;
 
@@ -598,12 +653,126 @@ int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32
                 if (!got)
                     break;
                 excess -= got;
+                slot->rx_discarded += got;
             }
         }
         n = (int32_t)bp_ring_read(slot->rx, dst, len);
     }
     mtx_unlock(&g_audio_lock);
     return n;
+}
+
+int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out)
+{
+    struct bp_audio_slot *slot;
+    struct bp_ring_stats rs;
+
+    if (!out)
+        return EINVAL;
+
+    call_once(&g_audio_lock_once, audio_lock_init);
+    mtx_lock(&g_audio_lock);
+    slot = g_audio_open ? slot_find(call_handle) : NULL;
+    if (!slot) {
+        mtx_unlock(&g_audio_lock);
+        return ENOENT;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->epoch = slot->epoch;
+    out->tx_silence_frames = slot->tx_silence_frames;
+    out->tx_starved_frames = slot->tx_starved_frames;
+    out->rx_discarded = slot->rx_discarded;
+    if (slot->tx) {
+        bp_ring_stats_get(slot->tx, &rs);
+        out->tx_rejected = rs.dropped;
+        out->tx_high_water = rs.high_water;
+        out->tx_fill = bp_ring_size(slot->tx);
+    }
+    if (slot->rx) {
+        bp_ring_stats_get(slot->rx, &rs);
+        out->rx_dropped = rs.dropped;
+        out->rx_high_water = rs.high_water;
+        out->rx_fill = bp_ring_size(slot->rx);
+    }
+    mtx_unlock(&g_audio_lock);
+    return 0;
+}
+
+/* -- health sampling (re thread) -------------------------------------- */
+
+static struct tmr g_health_tmr;
+
+struct health_warn {
+    uint32_t call_handle;
+    bool tx;
+    uint64_t amount; /* starved frames (tx) or lost bytes (rx) */
+};
+
+/* Once per second: per-window deltas per slot, at most one warning per
+ * direction. Warnings are collected under the lock but emitted after it
+ * is released — bp_event_h enters Python, which must never run under
+ * g_audio_lock. */
+static void health_tick(void *arg)
+{
+    struct health_warn warns[64];
+    unsigned n = 0, i;
+    (void)arg;
+
+    call_once(&g_audio_lock_once, audio_lock_init);
+    mtx_lock(&g_audio_lock);
+    for (i = 0; i < BP_AUDIO_SLOTS; i++) {
+        struct bp_audio_slot *slot = &g_audio_slots[i];
+        struct bp_ring_stats rs;
+        uint64_t d;
+
+        if (!slot->call_handle)
+            continue;
+
+        if (slot->tx) {
+            d = slot->tx_starved_frames - slot->prev_tx_starved;
+            slot->prev_tx_starved = slot->tx_starved_frames;
+            if (d >= BP_AUDIO_TX_STARVED_MIN && n < RE_ARRAY_SIZE(warns)) {
+                warns[n].call_handle = slot->call_handle;
+                warns[n].tx = true;
+                warns[n].amount = d;
+                n++;
+            }
+        }
+        if (slot->rx) {
+            bp_ring_stats_get(slot->rx, &rs);
+            d = (rs.dropped - slot->prev_rx_dropped) +
+                (slot->rx_discarded - slot->prev_rx_discarded);
+            slot->prev_rx_dropped = rs.dropped;
+            slot->prev_rx_discarded = slot->rx_discarded;
+            if (d && slot->rx_armed && n < RE_ARRAY_SIZE(warns)) {
+                warns[n].call_handle = slot->call_handle;
+                warns[n].tx = false;
+                warns[n].amount = d;
+                n++;
+            }
+        }
+    }
+    mtx_unlock(&g_audio_lock);
+
+    for (i = 0; i < n; i++) {
+        char json[256];
+
+        /* Static ASCII text plus numbers: JSON-safe without escaping. */
+        if (warns[i].tx)
+            re_snprintf(json, sizeof(json),
+                        "{\"call\":%u,\"text\":\"transmit: application is not feeding "
+                        "audio fast enough (%llu frame(s) ran short in the last second)\"}",
+                        warns[i].call_handle, (unsigned long long)warns[i].amount);
+        else
+            re_snprintf(json, sizeof(json),
+                        "{\"call\":%u,\"text\":\"receive: application is not reading "
+                        "audio fast enough (%llu byte(s) of audio lost in the last second)\"}",
+                        warns[i].call_handle, (unsigned long long)warns[i].amount);
+        bp_event_h(BP_EV_BASE + BP_EV_AUDIO_WARNING, warns[i].call_handle, json);
+    }
+
+    tmr_start(&g_health_tmr, BP_AUDIO_HEALTH_MS, health_tick, NULL);
 }
 
 /* -- lifecycle, called from shim.c ------------------------------------ */
@@ -625,12 +794,16 @@ int bp_aumem_register(void)
     mtx_lock(&g_audio_lock);
     g_audio_open = true;
     mtx_unlock(&g_audio_lock);
+
+    tmr_start(&g_health_tmr, BP_AUDIO_HEALTH_MS, health_tick, NULL);
     return 0;
 }
 
 void bp_aumem_unregister(void)
 {
     size_t i;
+
+    tmr_cancel(&g_health_tmr);
 
     call_once(&g_audio_lock_once, audio_lock_init);
     mtx_lock(&g_audio_lock);

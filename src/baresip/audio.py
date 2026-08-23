@@ -19,6 +19,18 @@ them per direction. The buffers never block: a read returns what is
 there, a write queues what fits. A reader that falls more than half a
 buffer behind is skipped forward — oldest audio dropped — so live audio
 stays live.
+
+Health is watched for you: the stack samples every call's counters once
+per second and reports damage done by the application's pacing — writing
+too slowly mid-utterance, or reading too slowly — as at most one warning
+per direction per second, delivered to
+:meth:`Call.on_audio_warning <baresip.call.Call.on_audio_warning>`
+callbacks as :class:`AudioWarning`. The raw counters behind the warnings
+are always available from :meth:`CallAudio.stats`. A direction the
+application never uses is a choice, not a fault: writing nothing
+transmits silence without warning, and receive warnings begin only once
+the application has read from the call at all — audio arriving for a
+reader that never existed is dropped quietly (and counted).
 """
 
 import errno
@@ -57,6 +69,59 @@ class AudioInfo:
     rx_buffered: int
     tx_capacity: int
     rx_capacity: int
+
+
+@dataclass(frozen=True)
+class AudioStats:
+    """Health counters for one call's audio, per direction.
+
+    Counters are cumulative for the current streams; a renegotiation that
+    replaces a direction resets its counters, on the same lifetime the
+    epoch tracks.
+
+    Parameters:
+        tx_silence_frames: Transmit frames sent as pure silence because
+            nothing was buffered. Idle, not an error — this grows
+            whenever the application has nothing to say.
+        tx_starved_frames: Transmit frames padded mid-frame: audio was
+            flowing and ran dry. The signature of a writer that cannot
+            keep pace; this is what transmit warnings key off.
+        tx_rejected_bytes: Bytes :meth:`CallAudio.write` could not take
+            (buffer full) — the same shortfall its return value reports.
+        tx_buffered: Bytes written but not yet transmitted.
+        tx_high_water: Deepest transmit fill seen so far.
+        rx_dropped_bytes: Received bytes discarded because the buffer was
+            full — nothing is reading.
+        rx_discarded_bytes: Received bytes skipped by the catch-up that
+            keeps a slow reader live — something is reading, too slowly.
+        rx_buffered: Bytes received but not yet read.
+        rx_high_water: Deepest receive fill seen so far.
+    """
+
+    tx_silence_frames: int
+    tx_starved_frames: int
+    tx_rejected_bytes: int
+    tx_buffered: int
+    tx_high_water: int
+    rx_dropped_bytes: int
+    rx_discarded_bytes: int
+    rx_buffered: int
+    rx_high_water: int
+
+
+@dataclass(frozen=True)
+class AudioWarning:
+    """One audio health warning, as delivered to ``on_audio_warning``.
+
+    Parameters:
+        direction: ``"tx"`` — the application is not feeding audio fast
+            enough — or ``"rx"`` — it is not reading fast enough.
+        message: The full human-readable description, including how much
+            audio was affected in the sampled second.
+    """
+
+    direction: str
+    message: str
 
 
 class CallAudio:
@@ -113,6 +178,29 @@ class CallAudio:
             rx_buffered=info.rx_fill,
             tx_capacity=info.tx_capacity,
             rx_capacity=info.rx_capacity,
+        )
+
+    def stats(self) -> AudioStats:
+        """Snapshot the health counters; see :class:`AudioStats`.
+
+        Raises:
+            AudioNotActive: the call has no audio (yet, or anymore).
+        """
+        st = ffi.new("struct bp_audio_stats *")
+        if lib.bp_audio_stats_get(self._handle, st) != 0:
+            self._bound_epoch = None
+            raise AudioNotActive("no audio is active on this call")
+        self._bound_epoch = st.epoch
+        return AudioStats(
+            tx_silence_frames=st.tx_silence_frames,
+            tx_starved_frames=st.tx_starved_frames,
+            tx_rejected_bytes=st.tx_rejected,
+            tx_buffered=st.tx_fill,
+            tx_high_water=st.tx_high_water,
+            rx_dropped_bytes=st.rx_dropped,
+            rx_discarded_bytes=st.rx_discarded,
+            rx_buffered=st.rx_fill,
+            rx_high_water=st.rx_high_water,
         )
 
     def write(self, pcm) -> int:

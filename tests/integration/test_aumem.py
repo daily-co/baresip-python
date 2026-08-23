@@ -119,6 +119,9 @@ async def test_two_calls_carry_independent_audio(bench_ua):
     call_a.audio.write(sine(info_a.tx_sample_rate, 1.5))
     a_pcm, b_pcm = await asyncio.gather(read_for(call_a, 2.0), read_for(call_b, 2.0))
 
+    # B must be *receiving* for its quietness to prove independence —
+    # a dead media path would also measure silent.
+    assert b_pcm, "call B received nothing; its media path is down"
     assert peak_window_rms(a_pcm, info_a.rx_sample_rate) > TONE_RMS_FLOOR
     assert peak_window_rms(b_pcm, info_b.rx_sample_rate) < SILENCE_RMS_CEIL
     await call_a.hangup()
