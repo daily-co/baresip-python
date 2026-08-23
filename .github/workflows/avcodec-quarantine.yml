@@ -1,0 +1,44 @@
+name: avcodec-quarantine
+
+# Weekly compile + unit-suite check of the avcodec (H.264) opt-in module,
+# in a build environment that has the ffmpeg development libraries.
+#
+# GPL obligations attach to distribution, not to building or testing: this
+# lane may produce GPL-linked binaries precisely because nothing it builds
+# is ever conveyed. actions/upload-artifact is forbidden in this workflow
+# and nothing is retained. The support level this buys is compile-verified;
+# runtime behavior of the module is community-supported.
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+env:
+  PYTHONFAULTHANDLER: 1
+
+jobs:
+  quarantine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install native build dependencies (including ffmpeg)
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libssl-dev libopus-dev
+          libavcodec-dev libavutil-dev libavformat-dev libavfilter-dev
+          libavdevice-dev libswscale-dev libswresample-dev
+      - run: uv sync --group dev
+      - run: uv run python scripts/build_native.py
+        env:
+          BARESIP_EXTRA_MODULES: avcodec
+      - run: make ext
+        env:
+          BP_EXTRA_LIBS: -lavcodec -lavutil
+      - run: make test
+      # A lane that quietly built the default set would be a placebo:
+      # assert the extension really does link ffmpeg.
+      - name: Confirm ffmpeg linkage is present
+        run: uv run python scripts/check_linkage.py --allow-gpl | grep -q "GPL LINKAGE"

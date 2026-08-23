@@ -1,0 +1,50 @@
+name: wheels
+
+# Builds the distributable wheel set: manylinux_2_28 x86_64/aarch64 and
+# macOS arm64/x86_64, CPython 3.11-3.13. Static config (module set, per-
+# wheel smoke + linkage audit, images) lives in [tool.cibuildwheel] in
+# pyproject.toml. Runs on demand and on release tags — never per push:
+# four native builds x three interpreters would burn CI minutes without
+# adding signal (ci.yml already builds and tests every push).
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+env:
+  PYTHONFAULTHANDLER: 1
+
+jobs:
+  build:
+    name: ${{ matrix.os }} ${{ matrix.archs }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archs: x86_64
+          # aarch64 builds run under QEMU emulation: slow, but independent
+          # of hosted arm runner availability for this repository.
+          - os: ubuntu-latest
+            archs: aarch64
+          # Intel macOS stays supported via GitHub's Intel runner image.
+          - os: macos-15-intel
+            archs: x86_64
+          - os: macos-15
+            archs: arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.archs == 'aarch64'
+      - name: Build wheels
+        run: uvx 'cibuildwheel>=3.2,<4' --output-dir wheelhouse
+        env:
+          CIBW_ARCHS: ${{ matrix.archs }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.archs }}
+          path: wheelhouse/*.whl

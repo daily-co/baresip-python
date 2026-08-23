@@ -9,7 +9,9 @@ dynamic = ["version"]
 readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-2-Clause"
-license-files = ["LICENSE"]
+# The statically bundled libre/libbaresip are BSD-3; their notices ship in
+# every distribution alongside our own license.
+license-files = ["LICENSE", "third_party/re/LICENSE", "third_party/baresip/LICENSE"]
 keywords = ["sip", "voip", "baresip", "telephony", "rtp"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -38,18 +40,46 @@ dev = [
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-# Enabled once built wheels ship the native extension; until then the
-# extension is compiled in place with `make ext`:
-# cffi_modules = ["src/_native/build_ffi.py:ffi"]
+# The native extension is declared in setup.py (cffi_modules is a setup()
+# keyword with no pyproject equivalent), gated on BARESIP_BUILD_EXT=1 so
+# that development installs — which compile it in place with `make ext` —
+# keep working on a fresh clone.
 
 [tool.setuptools.packages.find]
 where = ["src"]
+# Only the real package: default discovery also treats src/_native (no
+# __init__.py) as a namespace package and ships the C sources in the wheel.
+include = ["baresip*"]
 
 [tool.setuptools.package-data]
 baresip = ["py.typed"]
 
 [tool.setuptools.dynamic]
 version = { attr = "baresip.__version__" }
+
+[tool.cibuildwheel]
+# One wheel per interpreter: the extension is a cffi API-mode module,
+# compiled against each CPython's ABI (not abi3).
+build = "cp311-* cp312-* cp313-*"
+build-verbosity = 1
+# setup.py declares the extension only when this is set; the before-all
+# steps below have produced the static libraries by the time it matters.
+environment = { BARESIP_BUILD_EXT = "1" }
+# Every wheel is exercised from a clean environment: import the installed
+# package, audit its linkage (the GPL release gate), one Runtime cycle.
+test-command = "python {project}/scripts/wheel_smoke.py"
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+before-all = "bash {project}/scripts/cibw_before_all_linux.sh"
+
+[tool.cibuildwheel.macos]
+before-all = "brew install openssl@3 opus && python3 {project}/scripts/build_native.py"
+# The wheels' macOS floor follows the Homebrew bottles bundled into them,
+# which target the build runner's OS. Lowering the floor means building
+# OpenSSL and opus from source in before-all instead of using brew.
+environment = { BARESIP_BUILD_EXT = "1", MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [tool.ruff]
 line-length = 100

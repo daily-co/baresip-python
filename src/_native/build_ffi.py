@@ -200,6 +200,14 @@ if platform.system() == "Darwin":
 else:
     _extra_link_args += ["-lresolv", "-lpthread"]
 
+# Builds with extra baresip modules need their external libraries on the
+# link line (e.g. BP_EXTRA_LIBS="-lsndfile" for extra_modules="sndfile"):
+# the module code sits in libbaresip.a either way, and its symbols must
+# resolve when the extension links.
+_extra_libs = os.environ.get("BP_EXTRA_LIBS")
+if _extra_libs:
+    _extra_link_args += _extra_libs.split()
+
 # BP_SANITIZE=address,undefined instruments the shim sources (the static
 # libraries stay uninstrumented — heap tracking still covers them, since
 # every mem_alloc reaches the intercepted malloc). Recovery is disabled so
@@ -233,6 +241,10 @@ ffi.set_source(
     library_dirs=_library_dirs,
     extra_compile_args=_extra_compile_args,
     extra_link_args=_extra_link_args,
+    # cffi would otherwise switch the module to the limited API and name it
+    # _native.abi3.so; wheels here are built per interpreter, and the
+    # extension's name should match the wheel's cp-tag.
+    py_limited_api=False,
 )
 
 
