@@ -140,8 +140,20 @@ class Config:
     native log level, the SIP trace switch.
 
     Parameters:
-        audio_driver: Audio driver as "module" or "module,device"; used for
-            both capture and playback.
+        audio_driver: Audio driver as "module" or "module,device"; used
+            for both capture and playback unless a direction is overridden
+            below. What "device" means is the module's own affair: a sound
+            card for hardware drivers, a WAV path for ``aufile``, a tone
+            frequency for ``ausine``; ``aumem`` (the default) ignores it.
+        audio_source: Capture-side override, same format. What the call
+            transmits comes from this driver — e.g.
+            ``"aufile,/path/greeting.wav"`` plays a file at the caller
+            (the file's end is reported as an ``END_OF_FILE`` call event;
+            the call stays up). None uses ``audio_driver``.
+        audio_player: Playback-side override, same format. What the call
+            receives goes to this driver — e.g. ``"aufile,/path/rec.wav"``
+            records the caller. None uses ``audio_driver``. Received
+            audio remains readable via ``call.audio`` under any player.
         expose_headers: Allowlist of SIP header names (an X-/P- custom
             header, typically) whose values event payloads carry when the
             triggering message has them. At most 16 names, each under 64
@@ -156,6 +168,8 @@ class Config:
     """
 
     audio_driver: str = "aumem"
+    audio_source: str | None = None
+    audio_player: str | None = None
     expose_headers: tuple[str, ...] = ()
     native_log_level: str = "warning"
     sip_trace: bool = False
@@ -164,9 +178,23 @@ class Config:
     def __post_init__(self):
         if not self.audio_driver:
             raise ValueError("audio_driver must not be empty")
-        # The configuration parser reads one value per line and stops at
-        # whitespace, so neither can be smuggled into a value.
-        _reject_chars("audio_driver", self.audio_driver, '"')
+        for field in ("audio_driver", "audio_source", "audio_player"):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            if not value:
+                raise ValueError(f"{field} must not be empty; use None for the audio_driver")
+            # The configuration parser reads one value per line and stops
+            # at whitespace, so neither can be smuggled into a value.
+            _reject_chars(field, value, '"')
+            # The stack stores these in fixed buffers (16-byte module,
+            # 128-byte device) and silently truncates overflow — a long
+            # WAV path would quietly become a different, nonexistent one.
+            module, _, device = value.partition(",")
+            if len(module.encode()) > 15:
+                raise ValueError(f"{field} module name exceeds the stack's 15-byte limit")
+            if len(device.encode()) > 127:
+                raise ValueError(f"{field} device exceeds the stack's 127-byte limit")
         # The limits mirror the native allowlist's fixed capacity.
         if len(self.expose_headers) > 16:
             raise ValueError("expose_headers allows at most 16 names")
@@ -191,11 +219,16 @@ class Config:
 
     def render(self) -> str:
         """The configuration text handed to the stack's parser."""
+
         # The parser's audio values are strictly "module,device" — a bare
         # module name fails its regex and the line is silently ignored,
         # leaving whatever driver happens to be registered first. Supply
         # the conventional device name for module-only drivers ("default"
         # is what device-picking modules treat as their default anyway;
         # deviceless ones like aumem ignore it).
-        driver = self.audio_driver if "," in self.audio_driver else f"{self.audio_driver},default"
-        return f"audio_source {driver}\naudio_player {driver}\n"
+        def norm(driver: str) -> str:
+            return driver if "," in driver else f"{driver},default"
+
+        source = norm(self.audio_source or self.audio_driver)
+        player = norm(self.audio_player or self.audio_driver)
+        return f"audio_source {source}\naudio_player {player}\n"

@@ -121,12 +121,40 @@ def test_render_driver_with_device_golden():
     )
 
 
+def test_render_per_direction_overrides_golden():
+    config = Config(
+        audio_source="aufile,/tmp/greeting.wav",
+        audio_player="aufile,/tmp/rec.wav",
+    )
+    assert config.render() == (
+        "audio_source aufile,/tmp/greeting.wav\naudio_player aufile,/tmp/rec.wav\n"
+    )
+
+
+def test_render_one_override_keeps_the_driver_for_the_other():
+    config = Config(audio_player="aufile,/tmp/rec.wav")
+    assert config.render() == ("audio_source aumem,default\naudio_player aufile,/tmp/rec.wav\n")
+
+
+def test_render_bare_override_gets_a_device_too():
+    config = Config(audio_source="ausine")
+    assert config.render() == "audio_source ausine,default\naudio_player aumem,default\n"
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
         {"audio_driver": ""},
         {"audio_driver": "aumem\nsip_listen 0.0.0.0:5060"},  # line injection
         {"audio_driver": "aufile,/a path/x.wav"},  # value parsing stops at a space
+        {"audio_source": ""},  # None selects the driver; empty is a mistake
+        {"audio_source": "aufile,/a path/x.wav"},
+        {"audio_player": ""},
+        {"audio_player": "aufile\nrtp_tos 184"},  # line injection
+        # The stack's fixed buffers silently truncate long values.
+        {"audio_source": "a" * 16},
+        {"audio_player": "aufile," + "x" * 128},
+        {"audio_driver": "aufile," + "x" * 128},
         {"expose_headers": ("X-Custom", "not a header")},
         {"expose_headers": ("",)},
         {"native_log_level": "verbose"},
