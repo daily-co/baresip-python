@@ -18,6 +18,7 @@ editable install picks it up.
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -72,6 +73,7 @@ ffi.cdef("""
 #define BP_CMD_TEST_HANDLE_NEW ...
 #define BP_CMD_TEST_HANDLE_DROP ...
 #define BP_CMD_TEST_HANDLE_PROBE ...
+#define BP_CMD_TEST_HANDLE_COUNT ...
 
 #define BP_EV_PONG ...
 #define BP_EV_DONE ...
@@ -198,6 +200,21 @@ if platform.system() == "Darwin":
 else:
     _extra_link_args += ["-lresolv", "-lpthread"]
 
+# BP_SANITIZE=address,undefined instruments the shim sources (the static
+# libraries stay uninstrumented — heap tracking still covers them, since
+# every mem_alloc reaches the intercepted malloc). Recovery is disabled so
+# the first finding fails the run instead of scrolling past a green suite.
+_extra_compile_args: list[str] = []
+_sanitize = os.environ.get("BP_SANITIZE")
+if _sanitize:
+    _extra_compile_args += [
+        f"-fsanitize={_sanitize}",
+        "-fno-sanitize-recover=all",
+        "-fno-omit-frame-pointer",
+        "-g",
+    ]
+    _extra_link_args += [f"-fsanitize={_sanitize}"]
+
 ffi.set_source(
     "baresip._native",
     # The entire C surface visible to Python is shim.h — never a raw
@@ -214,6 +231,7 @@ ffi.set_source(
         str(BARESIP_SRC / "include"),
     ],
     library_dirs=_library_dirs,
+    extra_compile_args=_extra_compile_args,
     extra_link_args=_extra_link_args,
 )
 
@@ -222,7 +240,10 @@ def main() -> None:
     for lib in (LIBRE_A, LIBBARESIP_A):
         if not lib.exists():
             raise SystemExit(f"build_ffi: {lib} not found — run `make native` first")
-    built = Path(ffi.compile(tmpdir=str(REPO_ROOT / "build" / "ffi"), verbose=True))
+    # Sanitized objects get their own build dir: the compiler cache only
+    # watches sources, so reusing one dir would silently mix flag sets.
+    tmpdir = REPO_ROOT / "build" / ("ffi-san" if _sanitize else "ffi")
+    built = Path(ffi.compile(tmpdir=str(tmpdir), verbose=True))
     dest = REPO_ROOT / "src" / "baresip" / built.name
     shutil.copy2(built, dest)
     print(f"build_ffi: OK\n  {dest}")

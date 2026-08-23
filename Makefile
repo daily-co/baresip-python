@@ -6,10 +6,17 @@
 #   check   - audit built artifacts' linkage (advisory here; CI enforces on release)
 #   format  - apply formatting to all Python and C sources
 #
+# Sanitizers (memory errors in the C sources need instrumented builds to
+# surface; CI runs this lane on Linux):
+#   ext-san  - rebuild the extension with ASan+UBSan. Overwrites the
+#              in-place extension: run `make ext` afterwards to restore
+#              the normal build (and keep `make check` meaningful).
+#   test-san - run the unit suite under the sanitized extension
+#
 # Bench (local FreeSWITCH in docker, see bench/README.md):
 #   bench-up / bench-logs / bench-down
 
-.PHONY: native ext test check format bench-up bench-logs bench-down
+.PHONY: native ext ext-san test test-san check format bench-up bench-logs bench-down
 
 format:
 	uv run ruff format src scripts tests
@@ -23,6 +30,41 @@ ext:
 
 test:
 	uv run pytest tests/unit
+
+ext-san:
+	BP_SANITIZE=address,undefined uv run python src/_native/build_ffi.py
+
+# The ASan runtime must own malloc from CPython's first allocation, so it
+# is preloaded into the python binary itself — never via `uv run`: the
+# loader applies the insertion to the first binary it starts (uv), and on
+# macOS dyld also consumes the variable, so python would run
+# uninstrumented. Reports go to a file, not stderr: pytest's fd capture
+# would swallow the report of a crashing test, leaving only a bare
+# faulthandler traceback; the cat replays it on failure.
+ifeq ($(shell uname -s),Darwin)
+# LeakSanitizer is unsupported on Apple Silicon: ASan+UBSan only here,
+# leak detection is the Linux lane's job. verify_interceptors=0 is for
+# the subprocess tests: dyld consumes the insertion variable, so their
+# python loads ASan late — tolerated (heap checking is inert there)
+# rather than aborting the whole run.
+test-san:
+	rm -f build/san-report.*
+	DYLD_INSERT_LIBRARIES=$$(clang -print-file-name=libclang_rt.asan_osx_dynamic.dylib) \
+	MallocNanoZone=0 \
+	ASAN_OPTIONS=detect_leaks=0:verify_interceptors=0:log_path=$(CURDIR)/build/san-report \
+	UBSAN_OPTIONS=print_stacktrace=1:log_path=$(CURDIR)/build/san-report \
+	.venv/bin/python -m pytest tests/unit; \
+	status=$$?; cat build/san-report.* 2>/dev/null; exit $$status
+else
+test-san:
+	rm -f build/san-report.*
+	LD_PRELOAD=$$(cc -print-file-name=libasan.so) \
+	ASAN_OPTIONS=detect_leaks=1:log_path=$(CURDIR)/build/san-report \
+	LSAN_OPTIONS=suppressions=$(CURDIR)/sanitizers/lsan.supp \
+	UBSAN_OPTIONS=print_stacktrace=1:log_path=$(CURDIR)/build/san-report \
+	.venv/bin/python -m pytest tests/unit; \
+	status=$$?; cat build/san-report.* 2>/dev/null; exit $$status
+endif
 
 check:
 	uv run python scripts/check_linkage.py

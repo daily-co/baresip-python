@@ -1132,6 +1132,24 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    /* The leak detector's ground truth: slots are freed C-side when their
+     * object closes, so a nonzero count once everything has closed is a
+     * real leak, not a consumer that missed an event. */
+    case BP_CMD_TEST_HANDLE_COUNT: {
+        uint32_t n[4] = {0, 0, 0, 0};
+        char json[64];
+        uint32_t i;
+
+        for (i = 1; i < BP_HANDLE_SLOTS; i++) {
+            if (g_slots[i].ptr)
+                n[g_slots[i].type]++;
+        }
+        re_snprintf(json, sizeof(json), "{\"ua\":%u,\"call\":%u,\"test\":%u}", n[BP_OBJ_UA],
+                    n[BP_OBJ_CALL], n[BP_OBJ_TEST]);
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
     default:
         /* Never silent: an unknown id means a Python/C mismatch. */
         fprintf(stderr, "baresip shim: unknown command id %d\n", id);

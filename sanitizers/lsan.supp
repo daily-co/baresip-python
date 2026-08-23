@@ -1,0 +1,28 @@
+# LeakSanitizer suppressions for running the test suite under an
+# ASan-instrumented extension inside an uninstrumented CPython.
+#
+# A pattern matches EVERY frame of a leak's allocation stack — including
+# frames the symbolizer surfaces from inlining. Any allocation the
+# extension makes from Python-called C has interpreter call machinery
+# beneath it (_PyObject_VectorcallTstate inlined into method_vectorcall,
+# _PyEval_EvalFrameDefault, ...), so even a prefix like leak:_PyObject_
+# silently suppresses the extension's own leaks — observed with a planted
+# leak, which only this allocator-level pattern set reports.
+#
+# Allocations CPython tracks bottom out in _PyMem_RawMalloc /
+# _PyMem_RawCalloc / _PyMem_RawRealloc, and the shim's C never routes
+# through them. The obmalloc entry points are listed too: on some paths
+# (observed with realloc) the symbolizer does not surface the inlined
+# _PyMem_Raw* frame, leaving _PyObject_Realloc as the deepest named
+# allocator. All are allocator-only symbols — no call-machinery
+# collision.
+leak:_PyMem_Raw
+leak:_PyObject_Malloc
+leak:_PyObject_Calloc
+leak:_PyObject_Realloc
+
+# OpenSSL's one-time initialization registers its cleanup with atexit,
+# which has not run when LSan scans. Only the init entry point is
+# suppressed: a blanket CRYPTO_malloc would hide real leaks of SSL/X509
+# objects.
+leak:OPENSSL_init

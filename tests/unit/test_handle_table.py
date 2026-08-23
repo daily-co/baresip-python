@@ -51,6 +51,12 @@ async def probe(rt, handle: int) -> int:
     return ev
 
 
+async def count(rt) -> dict:
+    ev, payload = await rt.cmd(lib.BP_CMD_TEST_HANDLE_COUNT)
+    assert ev == lib.BP_EV_DONE
+    return json.loads(payload)
+
+
 async def test_live_handle_resolves(runtime):
     handle = await new_handle(runtime)
     assert await probe(runtime, handle) == lib.BP_EV_DONE
@@ -105,3 +111,28 @@ async def test_generation_wraparound(runtime):
     revenant = await new_handle(runtime)
     assert revenant == first, "the collision itself: same slot, same generation"
     assert await probe(runtime, first) == lib.BP_EV_DONE
+
+
+async def test_churn_leaves_the_table_empty(runtime):
+    """Allocate/drop churn ends with zero live slots — the leak check.
+
+    Slots are freed C-side when their object closes, so a nonzero count
+    after everything has closed is a real leak, never a consumer that
+    missed an event. The count command is what the call soak asserts with
+    after a hundred real calls; this pins its accounting on the cheap
+    path first.
+    """
+    assert await count(runtime) == {"ua": 0, "call": 0, "test": 0}
+
+    live: list[int] = []
+    for _ in range(100):
+        live.append(await new_handle(runtime))
+        if len(live) >= 8:
+            await drop(runtime, live.pop(0))
+
+    mid = await count(runtime)
+    assert mid == {"ua": 0, "call": 0, "test": len(live)}
+
+    for handle in live:
+        await drop(runtime, handle)
+    assert await count(runtime) == {"ua": 0, "call": 0, "test": 0}

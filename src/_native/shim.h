@@ -71,6 +71,7 @@
 #define BP_CMD_TEST_HANDLE_NEW 102   /* allocates a dummy table entry */
 #define BP_CMD_TEST_HANDLE_DROP 103  /* json_args: a handle, in decimal */
 #define BP_CMD_TEST_HANDLE_PROBE 104 /* json_args: a handle, in decimal */
+#define BP_CMD_TEST_HANDLE_COUNT 105 /* live slots by type, as JSON */
 
 /* Event ids delivered to bp_event_h.
  *
