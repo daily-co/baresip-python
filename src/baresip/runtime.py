@@ -529,6 +529,7 @@ class Runtime:
             from_=data.get("from"),
             to=data.get("to"),
             headers=data.get("headers", {}),
+            stats=data.get("stats", {}),
             truncated=data.get("truncated", False),
         )
         for listener in list(self._listeners):

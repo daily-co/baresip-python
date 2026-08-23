@@ -35,6 +35,7 @@ from baresip.errors import (
 )
 from baresip.events import Event, StackEvent
 from baresip.runtime import Runtime
+from baresip.stats import CallStats
 
 logger = logging.getLogger("baresip.call")
 
@@ -109,6 +110,8 @@ class Call:
         self._warning_adapters: dict = {}
         self._dtmf_listeners: list = []
         self._dtmf_pressed: tuple[str, float] | None = None
+        self._rtcp_adapters: dict = {}
+        self._final_stats: CallStats | None = None
         self.peer = peer
         self.call_id = call_id
         self.headers = dict(headers) if headers else {}
@@ -141,6 +144,32 @@ class Call:
         return self._state
 
     @property
+    def final_stats(self) -> CallStats | None:
+        """The call's closing statistics report; None until it closes.
+
+        Populated from the ``CALL_CLOSED`` event, and also emitted as one
+        structured log record under ``baresip.call`` — every field an
+        ``extra`` attribute — so fleets get per-call quality without
+        writing any code. Live snapshots during the call: :meth:`on_rtcp`.
+        """
+        return self._final_stats
+
+    def _log_final_stats(self) -> None:
+        stats = self._final_stats
+        logger.info(
+            "call finished: %ds, MOS estimate %.2f",
+            stats.duration_s,
+            stats.mos_estimate,
+            extra={
+                "call": self._handle,
+                "sip_call_id": self.call_id,
+                "peer": self.peer,
+                "mos_estimate": stats.mos_estimate,
+                **{f: getattr(stats, f) for f in stats.__dataclass_fields__},
+            },
+        )
+
+    @property
     def audio(self) -> CallAudio:
         """This call's PCM streams; see :mod:`baresip.audio`.
 
@@ -166,6 +195,9 @@ class Call:
         elif event.event is Event.CALL_CLOSED:
             self._state = CallState.CLOSED
             self._close_reason = event.text
+            if event.stats:
+                self._final_stats = CallStats._from_payload(event.stats)
+                self._log_final_stats()
             self._runtime.unsubscribe(self._on_stack_event)
         elif event.event is Event.CALL_DTMF_START and event.text:
             # The start report carries the digit; the end report does
@@ -370,6 +402,32 @@ class Call:
         """Stop delivering audio warnings to ``callback``. Unknown callbacks
         are ignored."""
         adapter = self._warning_adapters.pop(callback, None)
+        if adapter is not None:
+            self.off(adapter)
+
+    def on_rtcp(self, callback) -> None:
+        """Deliver live media-quality snapshots for this call to ``callback``.
+
+        One fires per RTCP report the far end sends — typically every few
+        seconds — so a fleet can watch per-call quality without polling.
+        The same fields arrive one last time via :attr:`final_stats`.
+
+        Args:
+            callback: Called with a :class:`~baresip.stats.CallStats`.
+                Same delivery contract as :meth:`on`.
+        """
+
+        def adapter(event: StackEvent) -> None:
+            if event.event is Event.CALL_RTCP and event.stats:
+                callback(CallStats._from_payload(event.stats))
+
+        self._rtcp_adapters[callback] = adapter
+        self.on(adapter)
+
+    def off_rtcp(self, callback) -> None:
+        """Stop delivering RTCP snapshots to ``callback``. Unknown callbacks
+        are ignored."""
+        adapter = self._rtcp_adapters.pop(callback, None)
         if adapter is not None:
             self.off(adapter)
 

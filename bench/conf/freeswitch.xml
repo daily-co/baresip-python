@@ -128,6 +128,9 @@
             <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
             <param name="rtp-timer-name" value="soft"/>
             <param name="dtmf-type" value="rfc2833"/>
+            <!-- Without an explicit interval sofia sends no RTCP at all;
+                 real peers report every few seconds, so the bench does. -->
+            <param name="rtcp-audio-interval-msec" value="2000"/>
             <!-- Accept SIP INFO digits even from legs that negotiated
                  RFC 2833 — without this, sofia 200-OKs the INFO and
                  silently drops the digit. -->

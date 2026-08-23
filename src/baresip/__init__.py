@@ -34,6 +34,7 @@ from baresip.errors import (
     UnsupportedFeatureError,
 )
 from baresip.events import Event, StackEvent
+from baresip.stats import CallStats
 
 # Library convention: log into the "baresip" hierarchy, emit nothing unless
 # the application configures handlers.
@@ -80,6 +81,7 @@ __all__: list[str] = [
     "CallDeclined",
     "CallFailed",
     "CallState",
+    "CallStats",
     "CallTimeout",
     "CommandQueueFull",
     "CommandTimeout",

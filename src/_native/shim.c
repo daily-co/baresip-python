@@ -680,6 +680,50 @@ static void emit_stack_event(int ev, struct ua *ua, struct call *call, const str
             jw_putc(&w, '}');
         }
     }
+    /* Media statistics ride the RTCP report events and the final CLOSED
+     * event. Harvested here, while the call still exists — for CLOSED
+     * this runs before the handle and audio slot are dropped below. All
+     * values are numeric, so the object is composed with one format
+     * string; nothing in it needs escaping. */
+    if (call && (ev == BEVENT_CALL_CLOSED || ev == BEVENT_CALL_RTCP)) {
+        const struct stream *strm = audio_strm(call_audio(call));
+
+        if (strm) {
+            const struct rtcp_stats *rc = stream_rtcp_stats(strm);
+            struct jbuf_stat jb;
+            struct bp_audio_stats as;
+            char stats[768];
+
+            if (stream_jbuf_stats(strm, &jb))
+                memset(&jb, 0, sizeof(jb));
+            if (bp_audio_stats_get(call_handle, &as))
+                memset(&as, 0, sizeof(as));
+
+            re_snprintf(
+                stats, sizeof(stats),
+                "{\"duration\":%u,\"setup\":%u,"
+                "\"tx\":{\"packets\":%u,\"bytes\":%u,\"errors\":%u,\"avg_bitrate\":%u},"
+                "\"rx\":{\"packets\":%u,\"bytes\":%u,\"errors\":%u,\"avg_bitrate\":%u},"
+                "\"rtcp\":{\"tx_lost\":%d,\"rx_lost\":%d,\"tx_jitter_us\":%u,"
+                "\"rx_jitter_us\":%u,\"rtt_us\":%u},"
+                "\"jbuf\":{\"late\":%u,\"lost\":%u,\"overflow\":%u,\"delay_ms\":%u,"
+                "\"jitter_ms\":%u},"
+                "\"audio\":{\"tx_silence_frames\":%llu,\"tx_starved_frames\":%llu,"
+                "\"rx_dropped\":%llu,\"rx_discarded\":%llu}}",
+                call_duration(call), call_setup_duration(call),
+                stream_metric_get_tx_n_packets(strm), stream_metric_get_tx_n_bytes(strm),
+                stream_metric_get_tx_n_err(strm), (uint32_t)stream_metric_get_tx_avg_bitrate(strm),
+                stream_metric_get_rx_n_packets(strm), stream_metric_get_rx_n_bytes(strm),
+                stream_metric_get_rx_n_err(strm), (uint32_t)stream_metric_get_rx_avg_bitrate(strm),
+                rc ? rc->tx.lost : 0, rc ? rc->rx.lost : 0, rc ? rc->tx.jit : 0,
+                rc ? rc->rx.jit : 0, rc ? rc->rtt : 0, jb.n_late, jb.n_lost, jb.n_overflow,
+                jb.c_delay, jb.c_jitter, (unsigned long long)as.tx_silence_frames,
+                (unsigned long long)as.tx_starved_frames, (unsigned long long)as.rx_dropped,
+                (unsigned long long)as.rx_discarded);
+            jw_key(&w, "stats");
+            jw_puts(&w, stats);
+        }
+    }
     if (msg) {
         if (!call && pl_isset(&msg->callid))
             jw_kv_pl(&w, "call_id", &msg->callid);

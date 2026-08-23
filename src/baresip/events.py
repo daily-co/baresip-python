@@ -104,6 +104,9 @@ class StackEvent:
         to: The To header's address, when the event carries a SIP message.
         headers: The allowlisted headers found on the message
             (:class:`~baresip.config.Config` ``expose_headers``).
+        stats: Media statistics, riding ``CALL_RTCP`` and ``CALL_CLOSED``
+            events; empty on everything else. The typed view is
+            :class:`~baresip.stats.CallStats`.
         truncated: True when any value was cut to fit its size cap.
     """
 
@@ -117,4 +120,5 @@ class StackEvent:
     from_: str | None = None
     to: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    stats: dict = field(default_factory=dict)
     truncated: bool = False
