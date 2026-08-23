@@ -23,6 +23,7 @@ import logging
 import os
 
 from baresip._native import lib
+from baresip.audio import CallAudio
 from baresip.errors import (
     BaresipError,
     CallFailed,
@@ -83,6 +84,7 @@ class Call:
         self._ua_handle = ua_handle
         self._state = state
         self._close_reason: str | None = None
+        self._audio: CallAudio | None = None
         self._listeners: list = []
         self.peer = peer
         self.call_id = call_id
@@ -114,6 +116,18 @@ class Call:
     def state(self) -> CallState:
         """Current state, as last reported by the stack."""
         return self._state
+
+    @property
+    def audio(self) -> CallAudio:
+        """This call's PCM streams; see :mod:`baresip.audio`.
+
+        Always available as an object — its operations raise
+        :class:`~baresip.errors.AudioNotActive` until the call's media
+        is actually up.
+        """
+        if self._audio is None:
+            self._audio = CallAudio(self._handle)
+        return self._audio
 
     def _on_stack_event(self, event: StackEvent) -> None:
         # The library's own listener: keeps state truthful and fans out to

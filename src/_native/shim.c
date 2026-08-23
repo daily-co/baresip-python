@@ -20,6 +20,7 @@
 #include <baresip.h>
 
 #include "shim.h"
+#include "internal.h"
 
 /* Identifies us in the SIP User-Agent header. Deliberately version-free:
  * a version there tells a scanner which bugs to try. */
@@ -382,6 +383,21 @@ static uint32_t handle_create(void *ptr, enum bp_obj_type type)
     return 0;
 }
 
+/* Find-only variant for other translation units (aumem correlates its
+ * streams to calls with it): never creates, 0 when absent. */
+uint32_t bp_call_handle_find(const struct call *call)
+{
+    uint32_t i;
+
+    if (!call)
+        return 0;
+    for (i = 1; i < BP_HANDLE_SLOTS; i++) {
+        if (g_slots[i].ptr == call && g_slots[i].type == BP_OBJ_CALL)
+            return handle_pack(i, g_slots[i].gen);
+    }
+    return 0;
+}
+
 static void *handle_lookup(uint32_t handle, enum bp_obj_type type)
 {
     uint32_t idx = handle & 0xFFFFFF;
@@ -732,9 +748,12 @@ static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
     emit_stack_event(ev, ua, call, msg, text);
 
     /* The call is over: no later event can reference it, so this is one
-     * of the two places allowed to free its slot. */
-    if (ev == BEVENT_CALL_CLOSED && call)
+     * of the two places allowed to free its slot. The audio slot goes
+     * with it — its stream instances die with the call moments later. */
+    if (ev == BEVENT_CALL_CLOSED && call) {
+        bp_aumem_slot_drop(bp_call_handle_find(call));
         handle_drop_ptr(call);
+    }
 }
 
 int bp_bevent_max(void)
@@ -1097,6 +1116,9 @@ static void loop_unwind(enum bp_stage stage)
         handle_drain();
         ua_close();
         module_app_unload();
+        /* After ua_close: every aumem stream instance died with its
+         * call, so unregistering now leaves nothing dangling. */
+        bp_aumem_unregister();
     }
     if (stage >= BP_STAGE_CONF)
         conf_close();
@@ -1204,6 +1226,12 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
             goto out;
         }
     }
+
+    /* Our own audio driver registers directly — it lives in this
+     * extension, not in the static module set the build compiled. */
+    err = bp_aumem_register();
+    if (err)
+        goto out;
 
     err = mqueue_alloc(&g_mq, cmd_handler, NULL);
     if (err)

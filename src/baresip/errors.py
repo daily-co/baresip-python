@@ -133,3 +133,23 @@ class CallTimeout(CallFailed):
 
     The pending call is hung up (best effort) before this is raised.
     """
+
+
+class AudioNotActive(BaresipError):
+    """The call has no audio to exchange.
+
+    Raised by :class:`~baresip.audio.CallAudio` operations before the
+    call's media has started, after the call has closed, or once the
+    runtime is down.
+    """
+
+
+class AudioRestarted(BaresipError):
+    """The call's audio streams were replaced mid-call.
+
+    A re-INVITE renegotiated the media (possibly with a new sample rate
+    or channel count), so the streams Python was talking to are gone.
+    Audio buffered across the swap is lost by design; the next
+    read/write binds to the new streams — probe
+    :meth:`~baresip.audio.CallAudio.info` for their parameters.
+    """

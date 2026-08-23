@@ -19,6 +19,8 @@ import logging
 
 from baresip.config import Account, Config
 from baresip.errors import (
+    AudioNotActive,
+    AudioRestarted,
     BaresipError,
     CallBusy,
     CallDeclined,
@@ -43,7 +45,9 @@ __version__ = "0.0.0.dev0"
 # that `import baresip` — and with it the version lookup done by build
 # tooling — works before the extension is compiled.
 _NATIVE_BACKED = {
+    "AudioInfo": "baresip.audio",
     "Call": "baresip.call",
+    "CallAudio": "baresip.audio",
     "CallState": "baresip.call",
     "Runtime": "baresip.runtime",
     "UserAgent": "baresip.ua",
@@ -61,8 +65,12 @@ def __getattr__(name: str):
 # implementations land.
 __all__: list[str] = [
     "Account",
+    "AudioInfo",
+    "AudioNotActive",
+    "AudioRestarted",
     "BaresipError",
     "Call",
+    "CallAudio",
     "CallBusy",
     "CallDeclined",
     "CallFailed",

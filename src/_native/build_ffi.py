@@ -122,6 +122,21 @@ struct bp_ring_stats {
     uint32_t high_water;
 };
 
+// Programmatic audio (the aumem driver) — semantics documented in shim.h.
+struct bp_audio_info {
+    uint32_t epoch;
+    uint32_t tx_ready;
+    uint32_t rx_ready;
+    uint32_t tx_srate, tx_ch, tx_ptime;
+    uint32_t rx_srate, rx_ch;
+    uint32_t tx_fill, tx_capacity;
+    uint32_t rx_fill, rx_capacity;
+};
+
+int bp_audio_probe(uint32_t call_handle, struct bp_audio_info *info);
+int32_t bp_audio_write(uint32_t call_handle, uint32_t epoch, const uint8_t *src, uint32_t len);
+int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32_t len);
+
 bp_ring *bp_ring_alloc(uint32_t capacity);
 void     bp_ring_free(bp_ring *ring);
 uint32_t bp_ring_write(bp_ring *ring, const uint8_t *src, uint32_t len);
@@ -176,6 +191,7 @@ ffi.set_source(
     sources=[
         str(Path(__file__).parent / "shim.c"),
         str(Path(__file__).parent / "ring.c"),
+        str(Path(__file__).parent / "aumem.c"),
     ],
     include_dirs=[
         str(Path(__file__).parent),

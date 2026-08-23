@@ -191,4 +191,11 @@ class Config:
 
     def render(self) -> str:
         """The configuration text handed to the stack's parser."""
-        return f"audio_source {self.audio_driver}\naudio_player {self.audio_driver}\n"
+        # The parser's audio values are strictly "module,device" — a bare
+        # module name fails its regex and the line is silently ignored,
+        # leaving whatever driver happens to be registered first. Supply
+        # the conventional device name for module-only drivers ("default"
+        # is what device-picking modules treat as their default anyway;
+        # deviceless ones like aumem ignore it).
+        driver = self.audio_driver if "," in self.audio_driver else f"{self.audio_driver},default"
+        return f"audio_source {driver}\naudio_player {driver}\n"

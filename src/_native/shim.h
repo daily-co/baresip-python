@@ -208,4 +208,46 @@ void bp_log_start(void);
 void bp_log_stop(void);
 int bp_log_read(struct bp_log_rec *rec);
 
+/* Programmatic audio (the "aumem" driver).
+ *
+ * When the configuration selects audio_source "aumem", each call's
+ * transmit audio comes from a ring buffer Python fills; independent of
+ * the source, decoded receive audio is tapped into a second ring Python
+ * drains. These three functions are the Python side of those rings.
+ * Callable from ANY thread and deliberately NOT commands: audio moves
+ * at frame rate and must not round-trip the re thread's queue.
+ *
+ * PCM is signed 16-bit interleaved, native byte order (every supported
+ * platform is little-endian). Rates and channel counts are whatever the
+ * call negotiated — probe for them, per direction.
+ *
+ * bp_audio_probe fills `info` and returns 0, or ENOENT when the call
+ * has no audio (not started yet, already closed, or the runtime is
+ * down). A direction with its `*_ready` flag clear is not up (yet);
+ * reading returns no data and writing accepts none, without error.
+ *
+ * bp_audio_write / bp_audio_read return the byte count moved (possibly
+ * 0 — the rings never block), or a negative errno:
+ *
+ *   -ENOENT  no audio for that call (see above)
+ *   -ESTALE  `epoch` is stale: a renegotiation replaced the streams.
+ *            Data in flight across the swap is lost by design; probe
+ *            again for the new epoch and continue.
+ *
+ * A reader that has fallen more than half a ring behind is skipped
+ * forward (oldest audio dropped) so live audio stays live. */
+struct bp_audio_info {
+    uint32_t epoch;
+    uint32_t tx_ready; /* Python may feed the call     */
+    uint32_t rx_ready; /* decoded audio is being tapped */
+    uint32_t tx_srate, tx_ch, tx_ptime;
+    uint32_t rx_srate, rx_ch; /* the receive tap is frame-size agnostic */
+    uint32_t tx_fill, tx_capacity;
+    uint32_t rx_fill, rx_capacity;
+};
+
+int bp_audio_probe(uint32_t call_handle, struct bp_audio_info *info);
+int32_t bp_audio_write(uint32_t call_handle, uint32_t epoch, const uint8_t *src, uint32_t len);
+int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32_t len);
+
 #endif /* BP_SHIM_H */

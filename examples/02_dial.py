@@ -7,9 +7,9 @@
 """Dial out: call the bench's echo test, talk for ten seconds, hang up —
 then show what a failed call looks like.
 
-Audio here is a generated tone (ausine) echoed back by the far end; when
-the programmatic audio driver (aumem) ships, the same call carries PCM your
-code reads and writes, and this config becomes Config(audio_driver="aumem").
+Audio here is a generated tone (ausine) echoed back by the far end — no
+code touches PCM. For the programmatic path, where your code reads and
+writes the call's audio, see 03_echo_aumem.py.
 
 Defaults match the local FreeSWITCH bench (see bench/README.md):
 

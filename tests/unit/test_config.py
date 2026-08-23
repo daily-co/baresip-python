@@ -109,7 +109,9 @@ def test_account_rejects_non_int_reg_interval(value):
 
 
 def test_render_defaults_golden():
-    assert Config().render() == "audio_source aumem\naudio_player aumem\n"
+    # The parser's audio values are strictly "module,device": a bare
+    # module must render with a device or the line is silently ignored.
+    assert Config().render() == "audio_source aumem,default\naudio_player aumem,default\n"
 
 
 def test_render_driver_with_device_golden():
