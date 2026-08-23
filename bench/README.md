@@ -27,6 +27,7 @@ emulation (the image is amd64-only); that is fine at bench scale.
 | What | Value |
 |---|---|
 | SIP | `127.0.0.1:15060` (UDP/TCP) — override the host port with `BENCH_SIP_PORT` |
+| SIP over TLS | `127.0.0.1:15061` — override the host port with `BENCH_TLS_PORT` |
 | RTP | `127.0.0.1:16384–16393` (UDP) |
 | Accounts | `1001` / `1002` (humans), `1003` (automated tests), password `bench1234` |
 | `9196` | echo test — you hear yourself |
@@ -37,7 +38,12 @@ emulation (the image is amd64-only); that is fine at bench scale.
 Tests read `BENCH_SIP_PORT` (default `15060`) rather than hardcoding the port. Overriding it
 only remaps the host side, while FreeSWITCH keeps advertising port `15060` in its Contact —
 registration and calls still work, but in-dialog requests sent to the Contact go astray. Only
-override it to escape a port collision, and prefer the default.
+override it to escape a port collision, and prefer the default. The same applies to
+`BENCH_TLS_PORT` and the TLS port.
+
+TLS uses a self-signed certificate for `127.0.0.1` that `make bench-up` generates into
+`bench/certs/` (gitignored — regenerate freely, it protects nothing). Clients verify the
+server against `bench/certs/cert.pem`; FreeSWITCH reads the combined `wss.pem`.
 
 ## Manual smoke test
 

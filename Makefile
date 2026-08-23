@@ -69,7 +69,21 @@ endif
 check:
 	uv run python scripts/check_linkage.py
 
-bench-up:
+# Self-signed TLS material for the bench's TLS profile. FreeSWITCH needs
+# it under three fixed names in the cert dir: agent.pem (key+cert for
+# sofia-sip's transport), cafile.pem (trusted CAs — fatal if unloadable),
+# and wss.pem (mod_sofia's own certificate check). Clients verify against
+# cert.pem.
+bench/certs/wss.pem:
+	mkdir -p bench/certs
+	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+	    -keyout bench/certs/key.pem -out bench/certs/cert.pem \
+	    -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1,DNS:localhost"
+	cat bench/certs/cert.pem bench/certs/key.pem > bench/certs/wss.pem
+	cp bench/certs/wss.pem bench/certs/agent.pem
+	cp bench/certs/cert.pem bench/certs/cafile.pem
+
+bench-up: bench/certs/wss.pem
 	docker compose -f bench/docker-compose.yml up -d --wait
 
 # The image runs freeswitch -nc (no console): container stdout is empty,

@@ -245,6 +245,10 @@ def main() -> None:
     tmpdir = REPO_ROOT / "build" / ("ffi-san" if _sanitize else "ffi")
     built = Path(ffi.compile(tmpdir=str(tmpdir), verbose=True))
     dest = REPO_ROOT / "src" / "baresip" / built.name
+    # Fresh inode, never an in-place overwrite: macOS caches a vnode's
+    # code signature, and rewriting an extension the kernel has already
+    # executed gets the next process that imports it killed (SIGKILL).
+    dest.unlink(missing_ok=True)
     shutil.copy2(built, dest)
     print(f"build_ffi: OK\n  {dest}")
 

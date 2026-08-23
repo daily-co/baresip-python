@@ -1194,10 +1194,11 @@ enum bp_stage {
 static void loop_unwind(enum bp_stage stage)
 {
     if (stage >= BP_STAGE_UA) {
-        struct sip *sip = uag_sip();
-
-        if (sip)
-            sip_set_trace_handler(sip, NULL);
+        /* The SIP trace handler stays installed through ua_close: the
+         * teardown BYEs are real traffic, and a trace that goes silent
+         * exactly at shutdown would hide them. The handler dies with the
+         * sip object; until then it only writes the log ring, which the
+         * reader is still draining. */
         bevent_unregister(bp_bevent_h);
         /* The teardown drain: the second of the two places allowed to free
          * handle slots. Our references go first, so ua_close can actually
