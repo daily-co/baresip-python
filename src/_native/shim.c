@@ -897,6 +897,33 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    case BP_CMD_CALL_SEND_DIGIT: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        char key = 0;
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+
+        while (end && *end == ' ')
+            end++;
+        if (end)
+            key = *end;
+
+        if (!call) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        int cerr = key ? call_send_digit(call, key == 'R' ? KEYCODE_REL : key) : EINVAL;
+
+        if (cerr) {
+            char json[64];
+
+            re_snprintf(json, sizeof(json), "{\"error\":\"dtmf\",\"errno\":%d}", cerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+        } else
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
     case BP_CMD_UA_CONNECT: {
         char *end = NULL;
         uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;

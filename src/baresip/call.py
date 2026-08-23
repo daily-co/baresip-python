@@ -21,6 +21,8 @@ import enum
 import json
 import logging
 import os
+import time
+from dataclasses import dataclass
 
 from baresip._native import lib
 from baresip.audio import AudioWarning, CallAudio
@@ -37,6 +39,22 @@ from baresip.runtime import Runtime
 logger = logging.getLogger("baresip.call")
 
 _ESTABLISH_TIMEOUT = 30.0
+_DTMF_DIGITS = "0123456789ABCD*#"
+_DTMF_TONE_MS = 100
+
+
+@dataclass(frozen=True)
+class DigitEvent:
+    """One DTMF digit the far end sent, delivered to ``on_dtmf`` callbacks.
+
+    Parameters:
+        digit: The key: ``0``-``9``, ``A``-``D``, ``*`` or ``#``.
+        duration_ms: How long the key was held, measured between the
+            digit's start and end reports.
+    """
+
+    digit: str
+    duration_ms: int
 
 
 class CallState(enum.Enum):
@@ -89,6 +107,8 @@ class Call:
         # on_audio_warning registers a wrapper, not the callback itself;
         # this maps callback -> wrapper so off_audio_warning can find it.
         self._warning_adapters: dict = {}
+        self._dtmf_listeners: list = []
+        self._dtmf_pressed: tuple[str, float] | None = None
         self.peer = peer
         self.call_id = call_id
         self.headers = dict(headers) if headers else {}
@@ -147,6 +167,20 @@ class Call:
             self._state = CallState.CLOSED
             self._close_reason = event.text
             self._runtime.unsubscribe(self._on_stack_event)
+        elif event.event is Event.CALL_DTMF_START and event.text:
+            # The start report carries the digit; the end report does
+            # not — pair them here so listeners get one typed event.
+            self._dtmf_pressed = (event.text, time.monotonic())
+        elif event.event is Event.CALL_DTMF_END:
+            pressed, self._dtmf_pressed = self._dtmf_pressed, None
+            if pressed is not None:
+                digit, t0 = pressed
+                digit_event = DigitEvent(digit, int((time.monotonic() - t0) * 1000))
+                for callback in list(self._dtmf_listeners):
+                    try:
+                        callback(digit_event)
+                    except Exception:
+                        logger.exception("dtmf listener raised; continuing")
         for listener in list(self._listeners):
             try:
                 listener(event)
@@ -247,6 +281,54 @@ class Call:
         if ev == lib.BP_EV_STALE_HANDLE:
             raise StaleHandleError("call no longer exists")
 
+    async def send_dtmf(self, digits: str, interdigit_ms: int = 120) -> None:
+        """Send DTMF digits to the far end.
+
+        Each digit is pressed for about 100 ms and released, with
+        ``interdigit_ms`` of silence before the next. How the digits
+        travel — RTP telephone-events or SIP INFO — follows the
+        account's :attr:`~baresip.config.Account.dtmf_mode`; this method
+        returns once the last digit has been issued to the stack.
+
+        Interop note: digits sent in the first moments after a call is
+        answered can be swallowed by switches still wiring the call
+        (SIP-INFO digits especially, since they traverse the switch's
+        signaling path). IVR navigation is more reliable after a brief
+        settle, or after the far end has started prompting.
+
+        Args:
+            digits: One or more of ``0-9 A-D * #`` (lowercase accepted).
+            interdigit_ms: Milliseconds of spacing between digits.
+
+        Raises:
+            ValueError: a character is not a DTMF digit, or the spacing
+                is negative.
+            StaleHandleError: the call is already gone.
+            BaresipError: the stack refused a digit.
+        """
+        digits = digits.upper()
+        for digit in digits:
+            if digit not in _DTMF_DIGITS:
+                raise ValueError(f"{digit!r} is not a DTMF digit")
+        if interdigit_ms < 0:
+            raise ValueError(f"interdigit_ms must be >= 0, got {interdigit_ms}")
+        for i, digit in enumerate(digits):
+            await self._send_digit(digit)
+            await asyncio.sleep(_DTMF_TONE_MS / 1000)
+            await self._send_digit("R")  # ends the event on the wire
+            if i < len(digits) - 1:
+                await asyncio.sleep(interdigit_ms / 1000)
+
+    async def _send_digit(self, key: str) -> None:
+        ev, payload = await self._runtime.cmd(
+            lib.BP_CMD_CALL_SEND_DIGIT, args=f"{self._handle} {key}"
+        )
+        if ev == lib.BP_EV_STALE_HANDLE:
+            raise StaleHandleError("call no longer exists")
+        if payload is not None:
+            errno = json.loads(payload).get("errno", 0)
+            raise BaresipError(f"sending DTMF failed: {os.strerror(errno)}")
+
     def on(self, listener) -> None:
         """Deliver this call's stack events (RINGING, PROGRESS, ESTABLISHED,
         RTPESTAB, DTMF, CLOSED, ...) to ``listener``. Same delivery
@@ -290,3 +372,24 @@ class Call:
         adapter = self._warning_adapters.pop(callback, None)
         if adapter is not None:
             self.off(adapter)
+
+    def on_dtmf(self, callback) -> None:
+        """Deliver the far end's DTMF digits to ``callback``.
+
+        A digit is reported once, when its key is released, as a
+        :class:`DigitEvent`. RTP telephone-events and SIP INFO both
+        arrive here; in-band tones do not (decoding them needs the
+        opt-in ``in_band_dtmf`` build).
+
+        Args:
+            callback: Called with a :class:`DigitEvent`. Same delivery
+                contract as :meth:`on`.
+        """
+        if callback not in self._dtmf_listeners:
+            self._dtmf_listeners.append(callback)
+
+    def off_dtmf(self, callback) -> None:
+        """Stop delivering digits to ``callback``. Unknown callbacks are
+        ignored."""
+        if callback in self._dtmf_listeners:
+            self._dtmf_listeners.remove(callback)

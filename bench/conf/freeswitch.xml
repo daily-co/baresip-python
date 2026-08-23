@@ -116,6 +116,10 @@
             <param name="challenge-realm" value="auto_from"/>
             <param name="force-register-domain" value="$${domain}"/>
             <param name="force-register-db-domain" value="$${domain}"/>
+            <!-- Keep every registered contact per user (as real SIP
+                 domains do) so calls to a user fork to all of them —
+                 without this a second registration replaces the first. -->
+            <param name="multiple-registrations" value="contact"/>
             <!-- Symmetric signaling/media back through Docker's forwarder. -->
             <param name="aggressive-nat-detection" value="true"/>
             <param name="NDLB-force-rport" value="true"/>
@@ -124,6 +128,10 @@
             <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
             <param name="rtp-timer-name" value="soft"/>
             <param name="dtmf-type" value="rfc2833"/>
+            <!-- Accept SIP INFO digits even from legs that negotiated
+                 RFC 2833 — without this, sofia 200-OKs the INFO and
+                 silently drops the digit. -->
+            <param name="liberal-dtmf" value="true"/>
           </settings>
         </profile>
       </profiles>

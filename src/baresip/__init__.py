@@ -51,6 +51,7 @@ _NATIVE_BACKED = {
     "Call": "baresip.call",
     "CallAudio": "baresip.audio",
     "CallState": "baresip.call",
+    "DigitEvent": "baresip.call",
     "Runtime": "baresip.runtime",
     "UserAgent": "baresip.ua",
 }
@@ -83,6 +84,7 @@ __all__: list[str] = [
     "CommandQueueFull",
     "CommandTimeout",
     "Config",
+    "DigitEvent",
     "Event",
     "RegistrationError",
     "Runtime",

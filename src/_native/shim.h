@@ -55,6 +55,14 @@
  * {"error":...}. Progress and outcome arrive as stack events. */
 #define BP_CMD_UA_CONNECT 12
 
+/* Send one DTMF key. Args: "HANDLE K" where K is a digit [0-9A-D*#] to
+ * press, or "R" to release the pressed key. In RTP telephone-event mode
+ * the release ends the event on the wire, so a press must be followed by
+ * a release; in SIP INFO mode the press sends the whole message and the
+ * release is a no-op. Pacing between press and release — the tone
+ * duration the far end perceives — is the caller's. */
+#define BP_CMD_CALL_SEND_DIGIT 13
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */
