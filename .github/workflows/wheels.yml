@@ -73,6 +73,11 @@ jobs:
           # A re-run after a TestPyPI-only success must not fail on the
           # files that already landed there.
           skip-existing: true
+          # Both publish steps share this workspace: generating PEP 740
+          # attestations here leaves *.publish.attestation files beside
+          # the wheels, which the PyPI step then refuses to overwrite.
+          # PyPI gets attestations; TestPyPI does without.
+          attestations: false
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
