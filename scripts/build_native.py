@@ -248,7 +248,14 @@ def build(
         modules += list(DEBUG_MODULES)
     expected = set(modules)
 
-    common = ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"]
+    # The libdir is pinned because GNUInstallDirs picks lib64 on RHEL-family
+    # systems (the manylinux wheel containers among them), and everything
+    # downstream expects the static library at <prefix>/lib/libre.a.
+    common = [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        "-DCMAKE_INSTALL_LIBDIR=lib",
+    ]
     openssl = _openssl_root()
     if openssl:
         common.append(f"-DOPENSSL_ROOT_DIR={openssl}")
