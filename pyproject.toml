@@ -14,7 +14,7 @@ license = "BSD-2-Clause"
 license-files = ["LICENSE", "third_party/re/LICENSE", "third_party/baresip/LICENSE"]
 keywords = ["sip", "voip", "baresip", "telephony", "rtp"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Telecommunications Industry",
     "Operating System :: POSIX :: Linux",
@@ -61,6 +61,10 @@ version = { attr = "baresip.__version__" }
 # One wheel per interpreter: the extension is a cffi API-mode module,
 # compiled against each CPython's ABI (not abi3).
 build = "cp311-* cp312-* cp313-*"
+# manylinux only: the Linux before-all is dnf/AlmaLinux-specific, and musl
+# users can build from source. Without this, cibuildwheel also schedules
+# musllinux builds by default.
+skip = "*-musllinux_*"
 build-verbosity = 1
 # setup.py declares the extension only when this is set; the before-all
 # steps below have produced the static libraries by the time it matters.

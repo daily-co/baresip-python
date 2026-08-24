@@ -36,3 +36,37 @@ structurally no path to PyPI that bypasses it.
 
 CI never combines `pull_request_target` with a checkout of the PR head — that combination
 hands untrusted code the repository's write token.
+
+One-time prerequisites, per registry (pypi.org and test.pypi.org are separate accounts):
+a pending Trusted Publisher registered for project `baresip-python` with owner `daily-co`,
+repository `baresip-python`, workflow `wheels.yml`, environment `release`. The pending
+publisher becomes the real one when the first upload claims the project name.
+
+## Cutting a release
+
+1. Set `__version__` in `src/baresip/__init__.py`, date the version's section in
+   `CHANGELOG.md`, and land those on `main` with CI green.
+2. Tag that commit and push the tag:
+
+   ```
+   git tag v0.1.0a1
+   git push origin v0.1.0a1
+   ```
+
+3. The tag push runs the `wheels` workflow; when the build matrix is green, the publish
+   job waits for approval on the `release` environment. Approving it uploads to TestPyPI
+   first, then to PyPI.
+4. Verify from a clean environment — the extra index is required because dependencies do
+   not live on TestPyPI:
+
+   ```
+   uv venv /tmp/relcheck && VIRTUAL_ENV=/tmp/relcheck uv pip install \
+       --index-url https://test.pypi.org/simple/ \
+       --extra-index-url https://pypi.org/simple/ baresip-python
+   /tmp/relcheck/bin/python -c "import baresip; print(baresip.__version__)"
+   ```
+
+   and confirm the PyPI project page shows the release.
+
+Pre-releases (`aN`, `bN`, `rcN`) are invisible to a default `pip install baresip-python`
+until a final version exists; installing one takes `--pre` or an exact version pin.
