@@ -27,7 +27,7 @@ jobs:
       - name: Install native build dependencies (including ffmpeg)
         run: >
           sudo apt-get update && sudo apt-get install -y
-          libssl-dev libopus-dev
+          libssl-dev libopus-dev libasound2-dev
           libavcodec-dev libavutil-dev libavformat-dev libavfilter-dev
           libavdevice-dev libswscale-dev libswresample-dev
       - run: uv sync --group dev

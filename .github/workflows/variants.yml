@@ -48,7 +48,7 @@ jobs:
           submodules: recursive
       - uses: astral-sh/setup-uv@v5
       - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev libopus-dev ${{ matrix.extra_apt }}
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libopus-dev libasound2-dev ${{ matrix.extra_apt }}
       - run: uv sync --group dev
       - run: uv run python scripts/build_native.py ${{ matrix.native_flags }}
         env:

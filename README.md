@@ -83,6 +83,16 @@ uv run python examples/05_dtmf_ivr.py
 SIP_USER=1002 SIP_PASS=bench1234 uv run python examples/05_dtmf_ivr.py sip:1001@127.0.0.1:15060
 ```
 
+**[06 — softphone](examples/06_softphone.py).** Real speakers-and-microphone audio: the
+platform's hardware driver is picked automatically (`coreaudio` on macOS, `alsa` on Linux).
+Register and auto-answer the first call, or set `SIP_DIAL` to dial out; type digits + Enter
+to send DTMF, received digits are printed, `h` hangs up. Dialing the bench's echo service
+lets you hear yourself — use a headset, there is no echo cancellation.
+
+```
+SIP_DIAL=sip:9196@127.0.0.1:15060 uv run python examples/06_softphone.py
+```
+
 ## Audio and device selection
 
 Audio drivers are chosen when the runtime starts — `Config(audio_source=...,
@@ -90,8 +100,9 @@ audio_player=...)`, one driver per direction — and stay put for the runtime's 
 there is no mid-call driver switching. This is deliberate for v0.1: audio a program decides
 on at runtime is what the `aumem` driver is for (it is just bytes your code reads and
 writes), and richer switching APIs are planned for a later release. What a "device" means
-belongs to each driver: a WAV path for `aufile`, a tone frequency for `ausine`, nothing at
-all for `aumem`.
+belongs to each driver: a WAV path for `aufile`, a tone frequency for `ausine`, the sound
+card for the hardware drivers (`coreaudio` on macOS, `alsa` on Linux), nothing at all for
+`aumem`.
 
 ## Custom headers
 
@@ -152,6 +163,7 @@ version with a `DeprecationWarning` before removal. The package is fully typed (
 
 BSD 2-Clause. Copyright (c) 2026, Daily. Bundled third-party components (libre, libbaresip)
 are BSD-3-Clause; their notices ship with every distribution. Built wheels additionally
-bundle [OpenSSL](https://openssl-library.org/) and [libopus](https://opus-codec.org/) under
-their respective licenses — see [docs/UPGRADING.md](docs/UPGRADING.md) for how security
-releases in those propagate here.
+bundle [OpenSSL](https://openssl-library.org/) and [libopus](https://opus-codec.org/) —
+and, on Linux, ALSA's [libasound](https://www.alsa-project.org/) — under their respective
+licenses; see [docs/UPGRADING.md](docs/UPGRADING.md) for how security releases in those
+propagate here.

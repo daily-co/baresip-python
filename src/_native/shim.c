@@ -28,10 +28,17 @@
 
 /* Loaded at startup, in this order. The build compiles exactly this set
  * into the static libraries (see scripts/build_native.py), so a name here
- * that the build does not know about fails the load loudly. */
+ * that the build does not know about fails the load loudly. The tail is
+ * the platform's hardware speaker/mic driver; loading it opens no device.
+ */
 static const char *const bp_modules[] = {
-    "g711", "opus",   "srtp",   "dtls_srtp", "ice",      "stun",
-    "turn", "aufile", "ausine", "auconv",    "auresamp", "rtcpsummary",
+    "g711",      "opus",   "srtp",   "dtls_srtp", "ice",      "stun",
+    "turn",      "aufile", "ausine", "auconv",    "auresamp", "rtcpsummary",
+#if defined(__APPLE__)
+    "coreaudio",
+#elif defined(__linux__)
+    "alsa",
+#endif
 };
 
 /* Payload carried through the mqueue pipe. Allocated with plain malloc so

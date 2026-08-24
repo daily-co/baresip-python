@@ -30,8 +30,9 @@ baresip and libre are released in lockstep; always bump both to the same version
 ## Security updates for bundled libraries
 
 Released wheels bundle OpenSSL and libopus (built into the binary, repaired in by the wheel
-tooling). A security release in any bundled library is our responsibility to ship:
+tooling), and Linux wheels also bundle ALSA's libasound for the hardware audio driver. A
+security release in any bundled library is our responsibility to ship:
 
-- Watch the security advisories for OpenSSL, libopus, libre, and baresip.
+- Watch the security advisories for OpenSSL, libopus, alsa-lib, libre, and baresip.
 - A relevant advisory triggers a patch release of baresip-python with the updated dependency,
   independent of the normal release cadence.

@@ -192,13 +192,19 @@ if platform.system() == "Darwin":
         "SystemConfiguration",
         "-framework",
         "CoreFoundation",
+        # The coreaudio speaker/mic driver module:
+        "-framework",
+        "CoreAudio",
+        "-framework",
+        "AudioToolbox",
     ]
     for _formula in ("openssl@3", "opus"):
         _dir = _brew_lib_dir(_formula)
         if _dir:
             _library_dirs.append(str(_dir))
 else:
-    _extra_link_args += ["-lresolv", "-lpthread"]
+    # -lasound is the alsa speaker/mic driver module's dependency.
+    _extra_link_args += ["-lresolv", "-lpthread", "-lasound"]
 
 # Builds with extra baresip modules need their external libraries on the
 # link line (e.g. BP_EXTRA_LIBS="-lsndfile" for extra_modules="sndfile"):

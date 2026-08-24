@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from build_native import (
     DEFAULT_MODULES,
+    PLATFORM_MODULES,
     BuildPolicyError,
     check_completeness,
     check_gpl_link_lines,
@@ -31,6 +32,13 @@ from build_native import (
 )
 
 CLEAN_MODULES = set(DEFAULT_MODULES)
+
+
+def test_platform_modules_are_disjoint_hardware_drivers():
+    assert set(PLATFORM_MODULES) == {"Darwin", "Linux"}
+    for modules in PLATFORM_MODULES.values():
+        assert modules  # every supported platform has its driver
+        assert not set(modules) & CLEAN_MODULES
 
 
 # --- parsers -----------------------------------------------------------------

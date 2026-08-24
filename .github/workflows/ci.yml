@@ -19,7 +19,7 @@ jobs:
           submodules: recursive
       - uses: astral-sh/setup-uv@v5
       - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev libopus-dev
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libopus-dev libasound2-dev
       - run: uv sync --group dev
       - run: make native
       - run: make ext
@@ -49,7 +49,7 @@ jobs:
           submodules: recursive
       - uses: astral-sh/setup-uv@v5
       - name: Install native build dependencies
-        run: apt-get update && apt-get install -y build-essential cmake libssl-dev libopus-dev
+        run: apt-get update && apt-get install -y build-essential cmake libssl-dev libopus-dev libasound2-dev
       - run: uv sync --group dev
       - run: make native
       - run: make ext-san

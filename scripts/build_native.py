@@ -57,6 +57,14 @@ DEFAULT_MODULES: tuple[str, ...] = (
     "rtcpsummary",
 )
 
+#: Hardware speaker/mic drivers, one per platform, part of every default
+#: build on that platform. Loading them opens no devices — a device is
+#: only opened when a call actually uses the driver.
+PLATFORM_MODULES: dict[str, tuple[str, ...]] = {
+    "Darwin": ("coreaudio",),
+    "Linux": ("alsa",),
+}
+
 #: Interactive/debug modules, available via --debug-modules for local
 #: debugging builds only. Never part of a default or distributed build:
 #: `menu` makes call-control decisions on its own, `stdio` grabs the host
@@ -243,7 +251,9 @@ def build(
     baresip_src = (local_baresip or REPO_ROOT / "third_party" / "baresip").resolve()
 
     extras = {m for m in extra_modules.replace(",", ";").split(";") if m}
-    modules: list[str] = list(DEFAULT_MODULES) + sorted(extras)
+    modules: list[str] = (
+        list(DEFAULT_MODULES) + list(PLATFORM_MODULES.get(platform.system(), ())) + sorted(extras)
+    )
     if debug_modules:
         modules += list(DEBUG_MODULES)
     expected = set(modules)

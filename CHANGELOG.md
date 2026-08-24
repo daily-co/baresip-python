@@ -6,6 +6,15 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 
 ## [Unreleased]
 
+### Added
+
+- Hardware speaker/microphone audio drivers in the default build: `coreaudio` on macOS,
+  `alsa` on Linux (Linux wheels now bundle libasound), selected with
+  `Config(audio_driver=...)`.
+- `examples/06_softphone.py`: a real softphone — auto-detected platform audio, dial-in
+  with auto-answer or dial-out via `SIP_DIAL`, DTMF send from stdin and received-DTMF
+  printing.
+
 ## [0.1.0a1] - 2026-08-24
 
 First published pre-release, to TestPyPI and PyPI. Alpha: the API may still change

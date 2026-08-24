@@ -20,7 +20,7 @@ OPUS_SHA256=65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-dnf -y install openssl-devel cmake
+dnf -y install openssl-devel cmake alsa-lib-devel
 
 # --libdir puts the static library on el8's default linker search path;
 # /usr/local/lib is not on it, and the extension links a plain -lopus.
