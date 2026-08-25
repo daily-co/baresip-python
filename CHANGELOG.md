@@ -8,6 +8,13 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 
 ### Added
 
+- `Account.auth_user`: a separate digest-authentication username, for services whose
+  credential store keys it differently from the URI user (credential-list trunks).
+  Unset, the account authenticates as `user`.
+- Register-less accounts: `Account(reg_interval=0)` dials without registering
+  (trunk-style), and `register()` on such an account fails fast with
+  `RegistrationError` instead of timing out.
+
 - Hardware speaker/microphone audio drivers in the default build: `coreaudio` on macOS,
   `alsa` on Linux (Linux wheels now bundle libasound), selected with
   `Config(audio_driver=...)`.

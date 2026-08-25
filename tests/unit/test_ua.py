@@ -15,7 +15,7 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from baresip import Account, BaresipError, StaleHandleError
+from baresip import Account, BaresipError, RegistrationError, StaleHandleError
 from baresip.errors import split_status
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -59,6 +59,25 @@ async def test_stale_handle_fails_typed(runtime):
 async def test_unregister_before_register_is_a_noop(runtime):
     ua = await UserAgent.create(runtime, ACCOUNT)
     await ua.unregister()  # never registered: returns without touching the network
+
+
+async def test_registration_disabled_account_fails_fast(runtime):
+    """reg_interval=0 dials directly; the stack would silently do nothing
+    on register, so both directions must refuse up front — not wait out
+    the outcome timeout on an answer that can never come."""
+    ua = await UserAgent.create(
+        runtime, Account(user="dana", password="", domain="example.invalid", reg_interval=0)
+    )
+    with pytest.raises(RegistrationError, match="registration disabled"):
+        await ua.register()
+    with pytest.raises(RegistrationError, match="registration disabled"):
+        await ua.unregister()
+
+
+async def test_registration_disabled_detected_in_a_raw_aor(runtime):
+    ua = await UserAgent.create(runtime, "<sip:carol@example.invalid>;regint=0")
+    with pytest.raises(RegistrationError, match="registration disabled"):
+        await ua.register()
 
 
 async def test_create_event_carries_no_credential(runtime):

@@ -39,10 +39,12 @@ def test_aor_every_field_golden():
         transport="tls",
         audio_codecs=("opus/48000/2", "pcmu"),
         dtmf_mode="info",
+        auth_user="alice@corp",  # '@' is fine: parameters end at ';'
     )
     assert account.aor() == (
         '<sip:alice@example.com:5061;transport=tls>;auth_pass="pass word";'
-        "regint=300;answermode=manual;audio_codecs=opus/48000/2,pcmu;"
+        "auth_user=alice@corp;regint=300;answermode=manual;"
+        "audio_codecs=opus/48000/2,pcmu;"
         'dtmfmode=info;outbound="sip:sbc.example.com;transport=tcp"'
     )
 
@@ -50,6 +52,12 @@ def test_aor_every_field_golden():
 def test_aor_empty_password_omits_the_parameter():
     aor = Account(user="alice", domain="example.com", password="").aor()
     assert "auth_pass" not in aor
+
+
+def test_aor_unset_auth_user_omits_the_parameter():
+    # Absent, the stack authenticates as the AOR's user part.
+    aor = Account(user="alice", domain="example.com", password="x").aor()
+    assert "auth_user" not in aor
 
 
 def test_aor_empty_codecs_offer_everything_loaded():
@@ -91,6 +99,10 @@ def test_repr_redacts_the_password():
         {"audio_codecs": ("",)},
         {"audio_codecs": ("pcmu,pcma",)},  # one name, not a pre-joined list
         {"dtmf_mode": "inband"},
+        {"auth_user": ""},  # None means "authenticate as user"
+        {"auth_user": "a b"},  # bare parameter: no quoting to hide a space
+        {"auth_user": "a;b"},  # ends the parameter early
+        {"auth_user": 'a"b'},
     ],
 )
 def test_account_rejects_what_the_parser_would_misread(kwargs):

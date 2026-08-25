@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 from baresip._native import lib
 from baresip.call import Call, CallState
@@ -28,6 +29,9 @@ from baresip.runtime import Runtime
 logger = logging.getLogger("baresip.ua")
 
 _REGISTER_TIMEOUT = 10.0
+
+# regint=0 in an AOR disables registration in the stack.
+_REGINT_ZERO = re.compile(r";regint=0(?:;|$)")
 
 
 class UserAgent:
@@ -56,6 +60,7 @@ class UserAgent:
         self._runtime = runtime
         self._handle = handle
         self._registered = False
+        self._registration_disabled = False
         self._listeners: dict = {}
         self._incoming_callbacks: list = []
         self._incoming_listener = None
@@ -89,7 +94,15 @@ class UserAgent:
             errno = data.get("errno")
             detail = os.strerror(errno) if errno else data["error"]
             raise BaresipError(f"user agent allocation failed: {detail}")
-        return cls(runtime, data["handle"])
+        ua = cls(runtime, data["handle"])
+        # The stack silently does nothing on ua_register() for such an
+        # account, so register() refuses up front instead of timing out.
+        # The Account field is authoritative; raw AORs are checked by text.
+        if isinstance(account, Account):
+            ua._registration_disabled = account.reg_interval == 0
+        else:
+            ua._registration_disabled = _REGINT_ZERO.search(aor) is not None
+        return ua
 
     async def register(self, *, timeout: float = _REGISTER_TIMEOUT) -> None:
         """Register with the account's registrar and await the outcome.
@@ -99,9 +112,12 @@ class UserAgent:
 
         Raises:
             RegistrationError: rejected (``status`` carries the SIP code,
-                e.g. 401), transport failure, or no answer within timeout.
+                e.g. 401), transport failure, no answer within timeout —
+                or immediately, if the account disables registration.
             StaleHandleError: the native agent no longer exists.
         """
+        if self._registration_disabled:
+            raise RegistrationError("account has registration disabled (reg_interval=0)")
         outcome, listener = self._registration_outcome("registration failed")
         self._runtime.subscribe(listener)
         try:
@@ -135,10 +151,12 @@ class UserAgent:
             timeout: Seconds to wait for the confirmation.
 
         Raises:
-            RegistrationError: the registrar rejected the unregister or
-                never answered.
+            RegistrationError: the registrar rejected the unregister,
+                never answered, or the account disables registration.
             StaleHandleError: the native agent no longer exists.
         """
+        if self._registration_disabled:
+            raise RegistrationError("account has registration disabled (reg_interval=0)")
         if not self._registered:
             return
         outcome, listener = self._registration_outcome("unregistration failed")

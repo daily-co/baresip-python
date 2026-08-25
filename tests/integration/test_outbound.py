@@ -18,7 +18,9 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from baresip import Account, CallBusy, CallDeclined, Event
+from test_telephony_gates import capture_sip_trace, wait_closed
+
+from baresip import Account, CallBusy, CallDeclined, Event, RegistrationError
 from baresip.call import CallState
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -100,3 +102,38 @@ async def test_dial_declined(bench_ua):
         await call.wait_established()
     assert excinfo.value.status == 603
     assert call.state is CallState.CLOSED
+
+
+async def test_dial_without_registration(tmp_path):
+    """A reg_interval=0 account dials trunk-style: register() refuses up
+    front, no REGISTER ever goes on the wire, and the INVITE is
+    digest-challenged and answered with the account's credentials."""
+    runtime = Runtime()
+    await runtime.start(
+        f"net_interface 127.0.0.1\naudio_source ausine,440\naudio_player aufile,{tmp_path}/rx.wav\n"
+    )
+    try:
+        await runtime.set_sip_trace(True)
+        ua = await UserAgent.create(
+            runtime, Account(user="1003", password="bench1234", domain=DOMAIN, reg_interval=0)
+        )
+        with pytest.raises(RegistrationError, match="registration disabled"):
+            await ua.register()
+        with capture_sip_trace() as records:
+            call = await ua.dial(f"sip:9196@{DOMAIN}")
+            await call.wait_established()
+            assert call.state is CallState.ESTABLISHED
+            await call.hangup()
+            await wait_closed(call)
+        starts = [
+            rec.splitlines()[1].strip()
+            for rec in records
+            if len(rec.splitlines()) >= 2 and rec.splitlines()[0][:2] in ("TX", "RX")
+        ]
+        assert starts, "expected traced SIP messages"
+        assert not any(s.startswith("REGISTER ") for s in starts)
+        assert any(s.startswith(("SIP/2.0 401", "SIP/2.0 407")) for s in starts), (
+            "expected the INVITE to be digest-challenged"
+        )
+    finally:
+        await runtime.close()

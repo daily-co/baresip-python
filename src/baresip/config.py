@@ -54,12 +54,18 @@ class Account:
             domain itself: a host, host:port, or full ``sip:`` URI, which
             may carry URI parameters ("sbc.example.com;transport=tcp").
         reg_interval: Seconds between registration refreshes. 0 disables
-            registration entirely (direct-call use).
+            registration entirely: the account dials directly and
+            ``register()`` refuses instead of pretending.
         transport: SIP transport toward the domain.
         audio_codecs: Codec preference order, by stack codec name. An empty
             tuple offers every loaded codec.
         dtmf_mode: How DTMF is sent: RTP telephone-events ("rtpevent"),
             SIP INFO ("info"), or per-call automatic selection ("auto").
+        auth_user: Digest-authentication username, for services whose
+            credential store keys it differently from ``user``
+            (credential-list trunks, for example). None authenticates as
+            ``user``. Travels as a bare parameter, so it cannot contain
+            spaces, quotes, backslashes, semicolons, or angle brackets.
     """
 
     user: str
@@ -70,6 +76,7 @@ class Account:
     transport: Literal["udp", "tcp", "tls"] = "udp"
     audio_codecs: tuple[str, ...] = ("pcmu", "pcma")
     dtmf_mode: Literal["rtpevent", "info", "auto"] = "rtpevent"
+    auth_user: str | None = None
 
     def __post_init__(self):
         if not self.user:
@@ -98,6 +105,10 @@ class Account:
             _reject_chars("audio_codecs", codec, ',;"')
         if self.dtmf_mode not in _DTMF_MODES:
             raise ValueError(f"dtmf_mode must be one of {_DTMF_MODES}, got {self.dtmf_mode!r}")
+        if self.auth_user is not None:
+            if not self.auth_user:
+                raise ValueError("auth_user must not be empty; use None to authenticate as user")
+            _reject_chars("auth_user", self.auth_user, ';<>"\\')
 
     def aor(self) -> str:
         """The address-of-record line the stack's account parser consumes.
@@ -109,6 +120,8 @@ class Account:
         params = []
         if self.password:
             params.append(f'auth_pass="{self.password}"')
+        if self.auth_user is not None:
+            params.append(f"auth_user={self.auth_user}")
         params.append(f"regint={self.reg_interval}")
         params.append("answermode=manual")
         if self.audio_codecs:
@@ -127,7 +140,8 @@ class Account:
             f"Account(user={self.user!r}, domain={self.domain!r}, "
             f"password={password!r}, registrar={self.registrar!r}, "
             f"reg_interval={self.reg_interval!r}, transport={self.transport!r}, "
-            f"audio_codecs={self.audio_codecs!r}, dtmf_mode={self.dtmf_mode!r})"
+            f"audio_codecs={self.audio_codecs!r}, dtmf_mode={self.dtmf_mode!r}, "
+            f"auth_user={self.auth_user!r})"
         )
 
 
