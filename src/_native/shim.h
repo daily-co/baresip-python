@@ -63,6 +63,13 @@
  * duration the far end perceives — is the caller's. */
 #define BP_CMD_CALL_SEND_DIGIT 13
 
+/* Hold or resume. Args: "HANDLE H" where H=1 holds, 0 resumes. Completes
+ * when call_hold returns; the re-INVITE itself is confirmed only by the
+ * CALL_LOCAL_SDP "offer" stack event, because the stack silently skips
+ * the re-INVITE (and still returns 0) while another session refresh is
+ * in flight. The peer's answer arrives as events. */
+#define BP_CMD_CALL_HOLD 14
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */

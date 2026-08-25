@@ -1071,6 +1071,28 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    case BP_CMD_CALL_HOLD: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        bool hold = end ? strtol(end, NULL, 10) : true;
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+
+        if (!call) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        int cerr = call_hold(call, hold);
+
+        if (cerr) {
+            char json[64];
+
+            re_snprintf(json, sizeof(json), "{\"error\":\"hold\",\"errno\":%d}", cerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+        } else
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
     case BP_CMD_CALL_REJECT:
     case BP_CMD_CALL_HANGUP: {
         uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;

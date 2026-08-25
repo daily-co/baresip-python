@@ -102,6 +102,8 @@ class Call:
         self._handle = handle
         self._ua_handle = ua_handle
         self._state = state
+        self._on_hold = False
+        self._remote_on_hold = False
         self._close_reason: str | None = None
         self._audio: CallAudio | None = None
         self._listeners: list = []
@@ -142,6 +144,22 @@ class Call:
     def state(self) -> CallState:
         """Current state, as last reported by the stack."""
         return self._state
+
+    @property
+    def is_on_hold(self) -> bool:
+        """True while we hold the call (the last :meth:`hold` /
+        :meth:`resume` that reached the wire)."""
+        return self._on_hold
+
+    @property
+    def remote_on_hold(self) -> bool:
+        """True while the far end holds us.
+
+        Advanced by the ``CALL_HOLD`` and ``CALL_RESUME`` stack events.
+        The stack detects these from the peer's SDP, with two limits:
+        detection is audio-only, and only on an established call.
+        """
+        return self._remote_on_hold
 
     @property
     def final_stats(self) -> CallStats | None:
@@ -192,6 +210,10 @@ class Call:
             self.peer = event.peer
         if event.event is Event.CALL_ESTABLISHED:
             self._state = CallState.ESTABLISHED
+        elif event.event is Event.CALL_HOLD:
+            self._remote_on_hold = True
+        elif event.event is Event.CALL_RESUME:
+            self._remote_on_hold = False
         elif event.event is Event.CALL_CLOSED:
             self._state = CallState.CLOSED
             self._close_reason = event.text
@@ -312,6 +334,79 @@ class Call:
         ev, _ = await self._runtime.cmd(cmd_id, args=str(self._handle))
         if ev == lib.BP_EV_STALE_HANDLE:
             raise StaleHandleError("call no longer exists")
+
+    async def hold(self) -> None:
+        """Put the call on hold: a re-INVITE tells the far end, and media
+        pauses until :meth:`resume`.
+
+        Returns once the re-INVITE is on the wire; the peer's answer
+        arrives as events. Already-held calls return immediately. The far
+        end holding *us* is :attr:`remote_on_hold`, not this.
+
+        Raises:
+            StaleHandleError: the call is already gone.
+            BaresipError: the call is not established, another session
+                refresh is in flight (retry shortly), or the stack
+                refused.
+        """
+        await self._set_hold(True)
+
+    async def resume(self) -> None:
+        """Take the call off hold (the counterpart of :meth:`hold`).
+
+        A call that is not held returns immediately.
+
+        Raises:
+            StaleHandleError: the call is already gone.
+            BaresipError: the call is not established, another session
+                refresh is in flight (retry shortly), or the stack
+                refused.
+        """
+        await self._set_hold(False)
+
+    async def _set_hold(self, hold: bool) -> None:
+        verb = "hold" if hold else "resume"
+        if self._on_hold == hold:
+            return
+        if self._state is not CallState.ESTABLISHED:
+            raise BaresipError(f"{verb} requires an established call")
+
+        # The stack flips its hold state and returns 0 even when it could
+        # not send the re-INVITE (another INVITE/ACK still in flight) —
+        # and then a retry would be a no-op against the already-flipped
+        # flag. The re-INVITE's one observable is the CALL_LOCAL_SDP
+        # "offer" event, emitted before the command completes; when it is
+        # missing, flip the state back and report, so a later retry
+        # starts clean.
+        saw_offer = False
+
+        def listener(event: StackEvent) -> None:
+            nonlocal saw_offer
+            if (
+                event.call == self._handle
+                and event.event is Event.CALL_LOCAL_SDP
+                and event.text == "offer"
+            ):
+                saw_offer = True
+
+        self._runtime.subscribe(listener)
+        try:
+            ev, payload = await self._runtime.cmd(
+                lib.BP_CMD_CALL_HOLD, args=f"{self._handle} {int(hold)}"
+            )
+        finally:
+            self._runtime.unsubscribe(listener)
+        if ev == lib.BP_EV_STALE_HANDLE:
+            raise StaleHandleError("call no longer exists")
+        if payload is not None:
+            errno = json.loads(payload).get("errno", 0)
+            raise BaresipError(f"{verb} failed: {os.strerror(errno)}")
+        if not saw_offer:
+            await self._runtime.cmd(lib.BP_CMD_CALL_HOLD, args=f"{self._handle} {int(not hold)}")
+            raise BaresipError(
+                f"{verb} not sent: a session refresh is already in flight; retry shortly"
+            )
+        self._on_hold = hold
 
     async def send_dtmf(self, digits: str, interdigit_ms: int = 120) -> None:
         """Send DTMF digits to the far end.

@@ -17,6 +17,9 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 - `NoLocalAddressError`: dialing a target no local interface can reach (classic
   case: a loopback target without `net_interface` pinned) now raises a typed,
   explanatory error instead of a generic EINVAL dial failure.
+- Hold and resume: `call.hold()` / `call.resume()` with `call.is_on_hold`, and
+  `call.remote_on_hold` tracking the far end's hold state from the `CALL_HOLD`
+  / `CALL_RESUME` events.
 
 - Hardware speaker/microphone audio drivers in the default build: `coreaudio` on macOS,
   `alsa` on Linux (Linux wheels now bundle libasound), selected with

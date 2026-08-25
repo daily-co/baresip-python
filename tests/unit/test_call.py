@@ -17,7 +17,7 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from baresip import Event, StackEvent, UnsupportedFeatureError
+from baresip import BaresipError, Event, StackEvent, UnsupportedFeatureError
 from baresip.call import Call, CallState
 from baresip.runtime import Runtime
 
@@ -55,6 +55,32 @@ async def test_answer_rejects_headers_eagerly():
     with pytest.raises(UnsupportedFeatureError):
         await call.answer(headers={"X-Reply": "1"})
     assert call.state is CallState.INCOMING  # nothing was sent
+
+
+async def test_hold_requires_an_established_call():
+    call = incoming_call()
+    with pytest.raises(BaresipError, match="requires an established call"):
+        await call.hold()
+
+
+async def test_hold_and_resume_no_change_paths_send_nothing():
+    # The unstarted Runtime raises on any command, so returning cleanly
+    # proves the no-change paths never touch the stack.
+    call = incoming_call()
+    call._on_stack_event(event_for(call, Event.CALL_ESTABLISHED))
+    await call.resume()  # not held: nothing to do
+    call._on_hold = True
+    await call.hold()  # already held: nothing to do
+
+
+def test_remote_hold_tracked_by_events():
+    call = incoming_call()
+    call._on_stack_event(event_for(call, Event.CALL_ESTABLISHED))
+    assert not call.remote_on_hold
+    call._on_stack_event(event_for(call, Event.CALL_HOLD))
+    assert call.remote_on_hold
+    call._on_stack_event(event_for(call, Event.CALL_RESUME))
+    assert not call.remote_on_hold
 
 
 def test_state_advances_only_by_matching_events():
