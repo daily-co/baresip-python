@@ -22,7 +22,13 @@ import re
 from baresip._native import lib
 from baresip.call import Call, CallState
 from baresip.config import Account
-from baresip.errors import BaresipError, RegistrationError, StaleHandleError, split_status
+from baresip.errors import (
+    BaresipError,
+    NoLocalAddressError,
+    RegistrationError,
+    StaleHandleError,
+    split_status,
+)
 from baresip.events import Event, StackEvent
 from baresip.runtime import Runtime
 
@@ -200,6 +206,8 @@ class UserAgent:
         Raises:
             ValueError: a URI or header that cannot travel in a request.
             StaleHandleError: the native agent no longer exists.
+            NoLocalAddressError: no local interface can reach the target
+                (loopback targets need ``net_interface`` pinned).
             BaresipError: the stack refused to dial.
         """
         if not uri or any(c in uri for c in "\r\n"):
@@ -215,6 +223,13 @@ class UserAgent:
         if ev == lib.BP_EV_STALE_HANDLE:
             raise StaleHandleError("user agent no longer exists")
         data = json.loads(payload)
+        if data.get("error") == "no_laddr":
+            host = data.get("host") or uri
+            raise NoLocalAddressError(
+                f"no local address toward {host}: no INVITE was sent. Loopback "
+                'targets need "net_interface 127.0.0.1" in the runtime '
+                "configuration (see examples/06_softphone.py)."
+            )
         if "error" in data:
             errno = data.get("errno")
             detail = os.strerror(errno) if errno else data["error"]

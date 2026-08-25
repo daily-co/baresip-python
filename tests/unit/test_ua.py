@@ -15,7 +15,13 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from baresip import Account, BaresipError, RegistrationError, StaleHandleError
+from baresip import (
+    Account,
+    BaresipError,
+    NoLocalAddressError,
+    RegistrationError,
+    StaleHandleError,
+)
 from baresip.errors import split_status
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -101,6 +107,30 @@ async def test_dial_on_stale_handle_fails_typed(runtime):
     ghost = UserAgent(runtime, 0xBAD0001)
     with pytest.raises(StaleHandleError):
         await ghost.dial("sip:9196@example.invalid")
+
+
+async def test_dial_unreachable_loopback_fails_typed(runtime):
+    """Interface discovery skips loopback unless the configuration pins
+    it, so a loopback dial under the default config can send nothing —
+    the failure must name the problem, not surface as a bare EINVAL."""
+    ua = await UserAgent.create(runtime, ACCOUNT)
+    with pytest.raises(NoLocalAddressError, match="127.0.0.1"):
+        await ua.dial("sip:9196@127.0.0.1:15060")
+
+
+async def test_dial_loopback_works_when_pinned():
+    """The same dial goes through once net_interface names loopback (no
+    answer expected — dial() only needs the INVITE to leave)."""
+    rt = Runtime()
+    await rt.start(
+        "net_interface 127.0.0.1\naudio_source aumem,default\naudio_player aumem,default\n"
+    )
+    try:
+        ua = await UserAgent.create(rt, ACCOUNT)
+        call = await ua.dial("sip:9196@127.0.0.1:59999")
+        assert call.handle
+    finally:
+        await rt.close()
 
 
 def test_dial_rejects_unsendable_input():

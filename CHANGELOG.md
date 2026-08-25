@@ -14,6 +14,9 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 - Register-less accounts: `Account(reg_interval=0)` dials without registering
   (trunk-style), and `register()` on such an account fails fast with
   `RegistrationError` instead of timing out.
+- `NoLocalAddressError`: dialing a target no local interface can reach (classic
+  case: a loopback target without `net_interface` pinned) now raises a typed,
+  explanatory error instead of a generic EINVAL dial failure.
 
 - Hardware speaker/microphone audio drivers in the default build: `coreaudio` on macOS,
   `alsa` on Linux (Linux wheels now bundle libasound), selected with

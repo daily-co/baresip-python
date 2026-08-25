@@ -74,6 +74,17 @@ class UnsupportedFeatureError(BaresipError):
     """
 
 
+class NoLocalAddressError(BaresipError):
+    """No local interface can reach the dial target.
+
+    The stack's interface discovery found no source address toward the
+    target host, so no INVITE was sent. The classic case is a loopback
+    target: discovery skips loopback interfaces unless the configuration
+    pins one — put ``net_interface 127.0.0.1`` in the runtime config
+    (the softphone example shows the pattern).
+    """
+
+
 def split_status(text: str) -> tuple[int | None, str]:
     """Split a status line like ``"486 Busy Here"`` into (486, "Busy Here").
 

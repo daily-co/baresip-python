@@ -1011,6 +1011,33 @@ static void cmd_handler(int id, void *data, void *arg)
             line = next;
         }
 
+        /* Pre-flight the local-address selection for IP-literal targets.
+         * ua_connect fails with a bare EINVAL when interface discovery
+         * has no address toward the target (classic case: loopback
+         * without net_interface pinned), indistinguishable from an
+         * argument error. Mirror the stack's own destination derivation
+         * (ua_connect_dir -> ua_call_alloc: sa_set succeeds only for
+         * numeric hosts; link-local v6 gets a scope id first; DNS names
+         * never take the failing branch) and report just that case as a
+         * typed failure. A miss here falls through to the stack. */
+        struct sip_addr addr;
+        struct pl pl_uri;
+        struct sa dst;
+
+        pl_set_str(&pl_uri, uri);
+        sa_init(&dst, AF_UNSPEC);
+        if (0 == sip_addr_decode(&addr, &pl_uri))
+            (void)sa_set(&dst, &addr.uri.host, addr.uri.port);
+        if (sa_isset(&dst, SA_ADDR) && !(sa_af(&dst) == AF_INET6 && sa_is_linklocal(&dst)) &&
+            !sa_isset(net_laddr_for(baresip_network(), &dst), SA_ADDR)) {
+            char njson[96];
+
+            re_snprintf(njson, sizeof(njson), "{\"error\":\"no_laddr\",\"host\":\"%j\"}", &dst);
+            bp_emit(BP_EV_DONE, msg->handle, njson);
+            list_flush(&hdrs);
+            break;
+        }
+
         /* Headers ride on the UA between set and connect; clearing right
          * after keeps them off later calls and re-registrations. All of
          * it inside this one command, so nothing can interleave. */
