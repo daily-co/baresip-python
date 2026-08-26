@@ -182,9 +182,17 @@
           <action application="respond" data="603 Decline"/>
         </condition>
       </extension>
-      <!-- 1001-1004: bridge to the registered user. -->
+      <!-- 1001-1004: bridge to the registered user. The b-leg parks
+           instead of dying when the a-leg vanishes mid-bridge: a
+           transferor that BYEs the instant the success NOTIFY arrives
+           (RFC 5589 behavior, microseconds on loopback) otherwise races
+           FreeSWITCH's own transfer execution, and losing the race
+           kills the leg being transferred (DESTINATION_OUT_OF_ORDER
+           from switch_ivr_bridge). Tests hang up their legs
+           explicitly, so nothing relies on hangup propagation. -->
       <extension name="user">
         <condition field="destination_number" expression="^(100[1234])$">
+          <action application="export" data="nolocal:park_after_bridge=true"/>
           <action application="bridge" data="user/$1"/>
         </condition>
       </extension>

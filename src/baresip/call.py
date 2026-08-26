@@ -450,7 +450,59 @@ class Call:
             raise BaresipError("transfer requires an established call")
         if self._transfer_pending:
             raise BaresipError("a transfer is already in progress on this call")
+        await self._execute_transfer(
+            f"{self._handle} {uri}", cmd=lib.BP_CMD_CALL_TRANSFER, timeout=timeout
+        )
 
+    async def attended_transfer(
+        self, consult_call: "Call", *, timeout: float = _TRANSFER_TIMEOUT
+    ) -> None:
+        """Attended transfer: hand this call's peer over to ``consult_call``'s.
+
+        The classic consult-then-connect: talk to the original party
+        (this call), separately call the consultation target
+        (``consult_call``), then splice the two together. Both legs are
+        put on hold first (the convention peers expect; already-held
+        legs stay as they are), then the REFER with a Replaces header
+        goes out on this call. On success **both of our legs end**:
+        this call closes with the transfer outcome, and the far end
+        replaces the consultation dialog — that call's close arrives as
+        its own events. On failure both calls survive, on hold.
+
+        Args:
+            consult_call: The established consultation call whose peer
+                takes over this call's peer.
+            timeout: Seconds to wait for the reported outcome.
+
+        Raises:
+            ValueError: ``consult_call`` is this very call.
+            TransferFailed: the peer never advertised Replaces support,
+                refused, reported a failing outcome, or none arrived in
+                time.
+            StaleHandleError: either call is already gone.
+            BaresipError: a call is not established, a transfer is
+                already in progress, or the stack refused to send.
+        """
+        if consult_call is self:
+            raise ValueError("cannot transfer a call to itself")
+        if (
+            self._state is not CallState.ESTABLISHED
+            or consult_call.state is not CallState.ESTABLISHED
+        ):
+            raise BaresipError("attended transfer requires both calls established")
+        if self._transfer_pending:
+            raise BaresipError("a transfer is already in progress on this call")
+        await self.hold()
+        await consult_call.hold()
+        await self._execute_transfer(
+            f"{self._handle} {consult_call.handle}",
+            cmd=lib.BP_CMD_CALL_REPLACE_TRANSFER,
+            timeout=timeout,
+        )
+
+    async def _execute_transfer(self, args: str, *, cmd: int, timeout: float) -> None:
+        # Shared by blind and attended transfer: send the REFER command,
+        # then await the terminal outcome the stack reports as events.
         outcome = asyncio.get_running_loop().create_future()
 
         def listener(event: StackEvent) -> None:
@@ -479,13 +531,14 @@ class Call:
         self._transfer_pending = True
         self._runtime.subscribe(listener)
         try:
-            ev, payload = await self._runtime.cmd(
-                lib.BP_CMD_CALL_TRANSFER, args=f"{self._handle} {uri}"
-            )
+            ev, payload = await self._runtime.cmd(cmd, args=args)
             if ev == lib.BP_EV_STALE_HANDLE:
                 raise StaleHandleError("call no longer exists")
             if payload is not None:
-                errno = json.loads(payload).get("errno", 0)
+                data = json.loads(payload)
+                if data.get("error") == "replaces_unsupported":
+                    raise TransferFailed("peer does not support the Replaces header")
+                errno = data.get("errno", 0)
                 raise BaresipError(f"transfer failed to send: {os.strerror(errno)}")
             try:
                 await asyncio.wait_for(outcome, timeout)

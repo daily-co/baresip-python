@@ -109,6 +109,22 @@ def test_transfer_success_close_text_is_not_an_error_status():
     assert "transferred" in str(exc)
 
 
+async def test_attended_transfer_guards():
+    call = incoming_call()
+    other = Call(Runtime(), handle=10, ua_handle=7, state=CallState.INCOMING)
+    with pytest.raises(ValueError, match="itself"):
+        await call.attended_transfer(call)
+    with pytest.raises(BaresipError, match="both calls established"):
+        await call.attended_transfer(other)  # neither is established
+    call._on_stack_event(event_for(call, Event.CALL_ESTABLISHED))
+    with pytest.raises(BaresipError, match="both calls established"):
+        await call.attended_transfer(other)  # the consult leg is not
+    other._on_stack_event(StackEvent(event=Event.CALL_ESTABLISHED, ua=7, call=10))
+    call._transfer_pending = True
+    with pytest.raises(BaresipError, match="already in progress"):
+        await call.attended_transfer(other)
+
+
 def test_state_advances_only_by_matching_events():
     call = incoming_call()
     foreign = StackEvent(event=Event.CALL_ESTABLISHED, ua=7, call=999)

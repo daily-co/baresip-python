@@ -1116,6 +1116,35 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    case BP_CMD_CALL_REPLACE_TRANSFER: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        uint32_t ch = end ? (uint32_t)strtoul(end, NULL, 10) : 0;
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+        struct call *consult = handle_lookup(ch, BP_OBJ_CALL);
+
+        if (!call || !consult) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        /* Known only after the peer answered; both calls are
+         * established by the time the binding sends this. */
+        if (!call_supported(call, REPLACES)) {
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"replaces_unsupported\"}");
+            break;
+        }
+        int cerr = call_replace_transfer(call, consult);
+
+        if (cerr) {
+            char json[64];
+
+            re_snprintf(json, sizeof(json), "{\"error\":\"transfer\",\"errno\":%d}", cerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+        } else
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
     case BP_CMD_CALL_REJECT:
     case BP_CMD_CALL_HANGUP: {
         uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;

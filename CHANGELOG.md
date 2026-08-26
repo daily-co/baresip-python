@@ -23,6 +23,11 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 - Blind transfer: `call.transfer(uri)` sends an in-dialog REFER and awaits the
   reported outcome — on success the transferred call closes; failures raise
   the new `TransferFailed` with the reported SIP status.
+- Attended transfer: `call.attended_transfer(consult_call)` holds both legs and
+  splices the two peers together with a REFER carrying Replaces; on success
+  both of the application's legs end.
+- `examples/07_warm_transfer.py`: the receptionist pattern — answer, consult,
+  bridge the calls in Python audio, then splice and exit.
 
 - Hardware speaker/microphone audio drivers in the default build: `coreaudio` on macOS,
   `alsa` on Linux (Linux wheels now bundle libasound), selected with

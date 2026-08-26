@@ -78,6 +78,13 @@
  * call, so callers serialize transfers. */
 #define BP_CMD_CALL_TRANSFER 15
 
+/* Attended transfer. Args: "HANDLE CONSULT_HANDLE" — the REFER (with a
+ * Replaces header naming the consult call's dialog) goes out on the
+ * first call. Refused up front with {"error":"replaces_unsupported"}
+ * when the first call's peer never advertised Replaces support.
+ * Outcome reporting is identical to BP_CMD_CALL_TRANSFER. */
+#define BP_CMD_CALL_REPLACE_TRANSFER 16
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */
