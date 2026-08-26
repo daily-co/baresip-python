@@ -93,8 +93,9 @@ target-version = "py311"
 asyncio_mode = "auto"
 # bench tests need the docker bench up; run them explicitly with `pytest -m bench`
 # (a command-line -m overrides this default).
-addopts = "-m 'not bench and not soak'"
+addopts = "-m 'not bench and not soak and not torture'"
 markers = [
     "bench: integration tests requiring the local FreeSWITCH docker bench (deselected by default in CI without a bench)",
     "soak: long-running stability tests, minutes each; run explicitly with `pytest -m soak`",
+    "torture: seeded high-iteration stress tests, minutes each; run explicitly with `pytest -m torture` (TORTURE_SEED reproduces a run, TORTURE_SCALE shrinks it)",
 ]
