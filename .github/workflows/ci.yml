@@ -24,6 +24,11 @@ jobs:
       - run: make native
       - run: make ext
       - run: make test
+      # The torture suite at a tenth of its nightly iteration counts —
+      # enough to catch a gross regression on every push; torture.yml
+      # runs it full-scale.
+      - name: Torture (lite)
+        run: TORTURE_SCALE=0.1 uv run pytest tests/torture -m torture
       - run: make check
 
   # The unit suite again, under an ASan+UBSan-instrumented extension with

@@ -1,0 +1,80 @@
+# The full-scale torture suite, nightly. Plain and ASan builds alternate
+# by day-of-year parity so every torture runs under both within two
+# nights; a manual dispatch can force either build and pin a seed to
+# reproduce a failure. The per-push lane in ci.yml runs the same suite
+# at a tenth of the iteration counts.
+name: torture
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Build to torture (auto alternates by day)
+        type: choice
+        options: [auto, plain, asan]
+        default: auto
+      seed:
+        description: TORTURE_SEED to reproduce a run (empty = random)
+        required: false
+        default: ""
+
+env:
+  PYTHONFAULTHANDLER: 1
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.pick.outputs.build }}
+    steps:
+      - id: pick
+        run: |
+          choice="${{ github.event.inputs.build || 'auto' }}"
+          if [ "$choice" = "auto" ]; then
+            if [ $(( $(date +%-j) % 2 )) -eq 0 ]; then choice=plain; else choice=asan; fi
+          fi
+          echo "build=$choice" >> "$GITHUB_OUTPUT"
+
+  plain:
+    needs: pick
+    if: needs.pick.outputs.build == 'plain'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TORTURE_SEED: ${{ github.event.inputs.seed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libopus-dev libasound2-dev
+      - run: uv sync --group dev
+      - run: make native
+      - run: make ext
+      - run: uv run pytest tests/torture -m torture -v
+
+  # Same container and environment as ci.yml's sanitize job — see the
+  # rationale there — with test-san pointed at the torture suite.
+  asan:
+    needs: pick
+    if: needs.pick.outputs.build == 'asan'
+    runs-on: ubuntu-latest
+    container: python:3.12
+    timeout-minutes: 120
+    env:
+      UV_PYTHON_PREFERENCE: only-system
+      TORTURE_SEED: ${{ github.event.inputs.seed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install native build dependencies
+        run: apt-get update && apt-get install -y build-essential cmake libssl-dev libopus-dev libasound2-dev
+      - run: uv sync --group dev
+      - run: make native
+      - run: make ext-san
+      - run: make test-san TEST_SAN_ARGS="tests/torture -m torture -v"

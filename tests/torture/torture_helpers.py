@@ -79,17 +79,24 @@ class Bounds:
         self.fd0 = fd_count()
         self.rss_growth = rss_growth
         self.fd_slack = fd_slack
+        # Under ASan (the sanitized lane exports ASAN_OPTIONS), RSS is
+        # not a leak signal: the quarantine retains freed memory by
+        # design, so growth there is expected and unbounded-looking.
+        # That lane's leak detection is LSan's job; the RSS curve is
+        # asserted only in plain builds.
+        self.rss_asserted = "ASAN_OPTIONS" not in os.environ
 
     def check(self, where: str, *, allowance_kb: int = 0) -> None:
         """allowance_kb: absolute extra budget on top of the relative
         limit — for creep that is known, measured, and tracked in a
         filed issue (the torture rules' quarantine shape)."""
-        rss = rss_kb()
-        limit = self.rss0 * self.rss_growth + allowance_kb
-        assert rss <= limit, (
-            f"{where}: RSS grew {self.rss0} -> {rss} KiB "
-            f"(limit {self.rss_growth:.0%} + {allowance_kb} KiB)"
-        )
+        if self.rss_asserted:
+            rss = rss_kb()
+            limit = self.rss0 * self.rss_growth + allowance_kb
+            assert rss <= limit, (
+                f"{where}: RSS grew {self.rss0} -> {rss} KiB "
+                f"(limit {self.rss_growth:.0%} + {allowance_kb} KiB)"
+            )
         fds = fd_count()
         assert fds <= self.fd0 + self.fd_slack, (
             f"{where}: fd count grew {self.fd0} -> {fds} (slack {self.fd_slack})"

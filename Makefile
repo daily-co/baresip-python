@@ -34,6 +34,10 @@ test:
 ext-san:
 	BP_SANITIZE=address,undefined uv run python src/_native/build_ffi.py
 
+# What test-san runs; the nightly torture lane overrides this to point
+# the same sanitized environment at tests/torture.
+TEST_SAN_ARGS ?= tests/unit
+
 # The ASan runtime must own malloc from CPython's first allocation, so it
 # is preloaded into the python binary itself — never via `uv run`: the
 # loader applies the insertion to the first binary it starts (uv), and on
@@ -53,7 +57,7 @@ test-san:
 	MallocNanoZone=0 \
 	ASAN_OPTIONS=detect_leaks=0:verify_interceptors=0:log_path=$(CURDIR)/build/san-report \
 	UBSAN_OPTIONS=print_stacktrace=1:log_path=$(CURDIR)/build/san-report \
-	.venv/bin/python -m pytest tests/unit; \
+	.venv/bin/python -m pytest $(TEST_SAN_ARGS); \
 	status=$$?; cat build/san-report.* 2>/dev/null; exit $$status
 else
 test-san:
@@ -62,7 +66,7 @@ test-san:
 	ASAN_OPTIONS=detect_leaks=1:log_path=$(CURDIR)/build/san-report \
 	LSAN_OPTIONS=suppressions=$(CURDIR)/sanitizers/lsan.supp \
 	UBSAN_OPTIONS=print_stacktrace=1:log_path=$(CURDIR)/build/san-report \
-	.venv/bin/python -m pytest tests/unit; \
+	.venv/bin/python -m pytest $(TEST_SAN_ARGS); \
 	status=$$?; cat build/san-report.* 2>/dev/null; exit $$status
 endif
 
