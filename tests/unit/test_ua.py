@@ -86,6 +86,11 @@ async def test_registration_disabled_detected_in_a_raw_aor(runtime):
         await ua.register()
 
 
+async def test_create_rejects_an_unknown_transfer_policy(runtime):
+    with pytest.raises(ValueError, match="transfer_policy"):
+        await UserAgent.create(runtime, ACCOUNT, transfer_policy="ask-nicely")
+
+
 async def test_create_event_carries_no_credential(runtime):
     """ua_alloc's CREATE event natively carries the full AOR — password
     included. The shim must scrub it before it reaches a listener."""

@@ -13,10 +13,12 @@ stack — a version bump that shifts them fails the suite instead of
 silently relabeling every event.
 
 One stance worth knowing: :attr:`Event.CALL_TRANSFER` (a peer asking us to
-transfer) is delivered like any other event, but no API acts on it yet —
-the stack auto-acknowledges the request and nothing executes the transfer
-behind the application's back. The event is informational until transfer
-execution ships.
+transfer) is auto-acknowledged by the stack — a 202 goes out before the
+event is even reported — but nothing *executes* the transfer behind the
+application's back: acting on it is
+:meth:`Call.accept_transfer <baresip.call.Call.accept_transfer>` /
+:meth:`Call.reject_transfer <baresip.call.Call.reject_transfer>`, or a
+``transfer_policy`` chosen when the user agent is created.
 """
 
 from dataclasses import dataclass, field

@@ -1145,6 +1145,81 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    case BP_CMD_CALL_TRANSFER_ACCEPT: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+        char json[64];
+
+        if (!call) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        while (end && *end == ' ')
+            end++;
+        if (!end || !*end) {
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"accept\",\"errno\":22}");
+            break;
+        }
+        /* The menu module's recipe: allocate the replacement call with
+         * the transferring call as xcall (5th arg) — that linkage is
+         * what makes the core report the outcome to the transferor and
+         * close the original leg when the new call establishes — then
+         * dial the raw Refer-To target. On error the transferor learns
+         * via a final 500 sipfrag, as menu does. */
+        struct ua *ua = call_get_ua(call);
+        struct call *call2 = NULL;
+        int cerr = ua_call_alloc(&call2, ua, VIDMODE_OFF, NULL, call, call_localuri(call), true);
+
+        if (!cerr) {
+            struct pl pl;
+
+            pl_set_str(&pl, end);
+            cerr = call_connect(call2, &pl);
+        }
+        if (cerr) {
+            (void)call_notify_sipfrag(call, 500, "Call Error");
+            mem_deref(call2);
+            re_snprintf(json, sizeof(json), "{\"error\":\"accept\",\"errno\":%d}", cerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+            break;
+        }
+        uint32_t ch = handle_create(call2, BP_OBJ_CALL);
+
+        if (!ch) {
+            ua_hangup(ua, call2, 0, NULL);
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"table_full\"}");
+            break;
+        }
+        re_snprintf(json, sizeof(json), "{\"handle\":%u}", ch);
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
+    case BP_CMD_CALL_TRANSFER_REJECT: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        long status = end ? strtol(end, NULL, 10) : 0;
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+
+        if (!call) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        if (status < 300 || status > 699)
+            status = 603;
+        int cerr = call_notify_sipfrag(call, (uint16_t)status, "Decline");
+
+        if (cerr) {
+            char json[64];
+
+            re_snprintf(json, sizeof(json), "{\"error\":\"reject\",\"errno\":%d}", cerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+        } else
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
     case BP_CMD_CALL_REJECT:
     case BP_CMD_CALL_HANGUP: {
         uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;

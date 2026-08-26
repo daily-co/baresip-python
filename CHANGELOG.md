@@ -28,6 +28,12 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   both of the application's legs end.
 - `examples/07_warm_transfer.py`: the receptionist pattern — answer, consult,
   bridge the calls in Python audio, then splice and exit.
+- Receiving transfers: a peer's REFER arrives as a typed `TransferRequest`
+  (`call.on_transfer_request` / `call.transfer_request`), executed with
+  `call.accept_transfer()` or refused with `call.reject_transfer()`; a
+  `transfer_policy` on `UserAgent.create` ("manual" by default — the
+  toll-fraud-safe stance — or "auto"/"reject") can decide without the
+  application.
 
 - Hardware speaker/microphone audio drivers in the default build: `coreaudio` on macOS,
   `alsa` on Linux (Linux wheels now bundle libasound), selected with

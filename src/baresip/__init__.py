@@ -56,6 +56,7 @@ _NATIVE_BACKED = {
     "CallState": "baresip.call",
     "DigitEvent": "baresip.call",
     "Runtime": "baresip.runtime",
+    "TransferRequest": "baresip.call",
     "UserAgent": "baresip.ua",
 }
 
@@ -97,6 +98,7 @@ __all__: list[str] = [
     "StackEvent",
     "StaleHandleError",
     "TransferFailed",
+    "TransferRequest",
     "UnsupportedFeatureError",
     "UserAgent",
 ]

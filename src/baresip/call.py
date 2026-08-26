@@ -21,6 +21,7 @@ import enum
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 
@@ -49,6 +50,51 @@ _DTMF_TONE_MS = 100
 # The stack's exact CALL_CLOSED text for a successful transfer (its
 # spelling, one r — matched verbatim).
 _TRANSFER_SUCCESS = "Call transfered"
+
+
+@dataclass(frozen=True)
+class TransferRequest:
+    """A peer's request (a REFER) that we call somewhere else.
+
+    Delivered to ``on_transfer_request`` callbacks and readable as
+    ``call.transfer_request`` while pending. The stack has already
+    202-accepted the REFER by the time this exists — the decision that
+    remains is whether to *execute* it: :meth:`Call.accept_transfer`
+    dials the target, :meth:`Call.reject_transfer` refuses.
+
+    Parameters:
+        target: The parsed target URI.
+        raw: The complete Refer-To value, exactly as received.
+        replaces: True when the target embeds a Replaces parameter —
+            an attended transfer, pointing at an existing dialog.
+        method: The requested method, uppercase. "INVITE" (a call) in
+            all but exotic uses.
+    """
+
+    target: str
+    raw: str
+    replaces: bool
+    method: str
+
+
+def _parse_refer_to(raw: str) -> TransferRequest:
+    """Split a raw Refer-To value into its decision-relevant parts.
+
+    The value may be angle-bracketed, carry URI headers (?Replaces=...)
+    inside the brackets, and address parameters (;method=...) outside
+    them. Execution always uses ``raw`` — this parse only informs.
+    """
+    value = raw.strip()
+    if value.startswith("<"):
+        addr, _, params = value[1:].partition(">")
+    else:
+        addr, _, params = value.partition(";")
+    target, _, _uri_headers = addr.partition("?")
+    match = re.search(r"(?:^|;)\s*method=([^;]+)", params, re.IGNORECASE)
+    method = match.group(1).strip().upper() if match else "INVITE"
+    return TransferRequest(
+        target=target.strip(), raw=raw, replaces="replaces=" in addr.lower(), method=method
+    )
 
 
 @dataclass(frozen=True)
@@ -112,6 +158,8 @@ class Call:
         self._on_hold = False
         self._remote_on_hold = False
         self._transfer_pending = False
+        self._transfer_request: TransferRequest | None = None
+        self._transfer_req_listeners: list = []
         self._close_reason: str | None = None
         self._audio: CallAudio | None = None
         self._listeners: list = []
@@ -222,6 +270,18 @@ class Call:
             self._remote_on_hold = True
         elif event.event is Event.CALL_RESUME:
             self._remote_on_hold = False
+        elif event.event is Event.CALL_TRANSFER and event.text:
+            self._transfer_request = _parse_refer_to(event.text)
+            for callback in list(self._transfer_req_listeners):
+                try:
+                    callback(self._transfer_request)
+                except Exception:
+                    logger.exception("transfer-request listener raised; continuing")
+        elif event.event is Event.CALL_TRANSFER_FAILED:
+            # The core gave up on the pending request (the implicit
+            # subscription timed out, or an execution failed) — there
+            # is nothing left to accept.
+            self._transfer_request = None
         elif event.event is Event.CALL_CLOSED:
             self._state = CallState.CLOSED
             self._close_reason = event.text
@@ -499,6 +559,100 @@ class Call:
             cmd=lib.BP_CMD_CALL_REPLACE_TRANSFER,
             timeout=timeout,
         )
+
+    @property
+    def transfer_request(self) -> TransferRequest | None:
+        """The pending request that we transfer this call; None if none.
+
+        Set when the peer's REFER arrives (the ``CALL_TRANSFER`` event),
+        cleared by :meth:`accept_transfer` / :meth:`reject_transfer` or
+        when the stack gives up on it (``CALL_TRANSFER_FAILED`` — the
+        implicit subscription times out after about a minute if nothing
+        acts).
+        """
+        return self._transfer_request
+
+    def on_transfer_request(self, callback) -> None:
+        """Deliver this call's transfer requests to ``callback``.
+
+        Args:
+            callback: Called with a :class:`TransferRequest`. Same
+                delivery contract as :meth:`on`.
+        """
+        if callback not in self._transfer_req_listeners:
+            self._transfer_req_listeners.append(callback)
+
+    def off_transfer_request(self, callback) -> None:
+        """Stop delivering transfer requests to ``callback``. Unknown
+        callbacks are ignored."""
+        if callback in self._transfer_req_listeners:
+            self._transfer_req_listeners.remove(callback)
+
+    async def accept_transfer(self) -> "Call":
+        """Execute the pending transfer request: dial its target.
+
+        Returns the new outbound call immediately (await its
+        :meth:`wait_established` for the outcome). The stack ties this
+        call's fate to the new one: when the new call establishes, the
+        transferor is notified of success and **this call closes**; if
+        the new call fails, the transferor is notified of the failure
+        and this call continues.
+
+        Raises:
+            BaresipError: no request is pending, or dialing failed (the
+                transferor is then told with a 500 sipfrag).
+            StaleHandleError: the call is already gone.
+        """
+        request = self._transfer_request
+        if request is None:
+            raise BaresipError("no transfer request is pending on this call")
+        ev, payload = await self._runtime.cmd(
+            lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{self._handle} {request.raw}"
+        )
+        if ev == lib.BP_EV_STALE_HANDLE:
+            raise StaleHandleError("call no longer exists")
+        data = json.loads(payload)
+        if "error" in data:
+            errno = data.get("errno")
+            detail = os.strerror(errno) if errno else data["error"]
+            raise BaresipError(f"transfer accept failed: {detail}")
+        self._transfer_request = None
+        return Call(
+            self._runtime,
+            handle=data["handle"],
+            ua_handle=self._ua_handle,
+            state=CallState.OUTGOING,
+            peer=request.target,
+        )
+
+    async def reject_transfer(self, status: int = 603) -> None:
+        """Refuse the pending transfer request; the call continues.
+
+        The REFER itself was 202-accepted by the stack before the
+        request was even reported, so the refusal travels as the
+        implicit subscription's final failing NOTIFY.
+
+        Args:
+            status: The SIP status the transferor is told (3xx-6xx).
+
+        Raises:
+            ValueError: a status outside 300-699.
+            BaresipError: no request is pending, or the stack refused.
+            StaleHandleError: the call is already gone.
+        """
+        if not 300 <= status <= 699:
+            raise ValueError(f"status must be a 3xx-6xx SIP code, got {status}")
+        if self._transfer_request is None:
+            raise BaresipError("no transfer request is pending on this call")
+        ev, payload = await self._runtime.cmd(
+            lib.BP_CMD_CALL_TRANSFER_REJECT, args=f"{self._handle} {status}"
+        )
+        if ev == lib.BP_EV_STALE_HANDLE:
+            raise StaleHandleError("call no longer exists")
+        if payload is not None:
+            errno = json.loads(payload).get("errno", 0)
+            raise BaresipError(f"transfer reject failed: {os.strerror(errno)}")
+        self._transfer_request = None
 
     async def _execute_transfer(self, args: str, *, cmd: int, timeout: float) -> None:
         # Shared by blind and attended transfer: send the REFER command,

@@ -20,7 +20,7 @@ import os
 import re
 
 from baresip._native import lib
-from baresip.call import Call, CallState
+from baresip.call import Call, CallState, _parse_refer_to
 from baresip.config import Account
 from baresip.errors import (
     BaresipError,
@@ -38,6 +38,8 @@ _REGISTER_TIMEOUT = 10.0
 
 # regint=0 in an AOR disables registration in the stack.
 _REGINT_ZERO = re.compile(r";regint=0(?:;|$)")
+
+_TRANSFER_POLICIES = ("manual", "auto", "reject")
 
 
 class UserAgent:
@@ -67,6 +69,8 @@ class UserAgent:
         self._handle = handle
         self._registered = False
         self._registration_disabled = False
+        self._transfer_policy = "manual"
+        self._transfer_call_callbacks: list = []
         self._listeners: dict = {}
         self._incoming_callbacks: list = []
         self._incoming_listener = None
@@ -80,19 +84,38 @@ class UserAgent:
         return self._handle
 
     @classmethod
-    async def create(cls, runtime: Runtime, account: Account | str) -> "UserAgent":
+    async def create(
+        cls,
+        runtime: Runtime,
+        account: Account | str,
+        *,
+        transfer_policy: str = "manual",
+    ) -> "UserAgent":
         """Allocate a native user agent for an account.
 
         Args:
             runtime: A running runtime.
             account: The account to embody, or a raw AOR string.
+            transfer_policy: What happens when a peer asks a call of
+                this agent to transfer (a REFER): "manual" (default)
+                reports it and leaves the decision to the application —
+                the toll-fraud-safe stance, since a REFER can steer a
+                bot into dialing arbitrary numbers; "auto" executes
+                every INVITE-method request immediately (the new calls
+                arrive via :meth:`on_transfer_call`); "reject" refuses
+                every request with a 603.
 
         Returns:
             The bound user agent. Not yet registered.
 
         Raises:
+            ValueError: an unknown ``transfer_policy``.
             BaresipError: the stack rejected the account.
         """
+        if transfer_policy not in _TRANSFER_POLICIES:
+            raise ValueError(
+                f"transfer_policy must be one of {_TRANSFER_POLICIES}, got {transfer_policy!r}"
+            )
         aor = account.aor() if isinstance(account, Account) else account
         _, payload = await runtime.cmd(lib.BP_CMD_UA_ALLOC, args=aor)
         data = json.loads(payload)
@@ -108,6 +131,9 @@ class UserAgent:
             ua._registration_disabled = account.reg_interval == 0
         else:
             ua._registration_disabled = _REGINT_ZERO.search(aor) is not None
+        ua._transfer_policy = transfer_policy
+        if transfer_policy != "manual":
+            ua._install_transfer_policy()
         return ua
 
     async def register(self, *, timeout: float = _REGISTER_TIMEOUT) -> None:
@@ -267,6 +293,70 @@ class UserAgent:
                 )
 
         return future, listener
+
+    def on_transfer_call(self, callback) -> None:
+        """Invoke ``callback(call)`` for calls the "auto" transfer policy dials.
+
+        When the policy executes a peer's transfer request, the
+        replacement call is outbound and brand new — this is how the
+        application gets hold of it. (With the "manual" policy the new
+        call is simply :meth:`Call.accept_transfer`'s return value.)
+        """
+        if callback not in self._transfer_call_callbacks:
+            self._transfer_call_callbacks.append(callback)
+
+    def off_transfer_call(self, callback) -> None:
+        """Stop delivering policy-dialed calls to ``callback``. Unknown
+        callbacks are ignored."""
+        if callback in self._transfer_call_callbacks:
+            self._transfer_call_callbacks.remove(callback)
+
+    def _install_transfer_policy(self) -> None:
+        def listener(event: StackEvent) -> None:
+            if event.event is not Event.CALL_TRANSFER or event.ua != self._handle:
+                return
+            asyncio.get_running_loop().create_task(self._apply_transfer_policy(event))
+
+        self._runtime.subscribe(listener)
+
+    async def _apply_transfer_policy(self, event: StackEvent) -> None:
+        try:
+            if self._transfer_policy == "reject" or not event.text:
+                await self._runtime.cmd(lib.BP_CMD_CALL_TRANSFER_REJECT, args=f"{event.call} 603")
+                logger.info("transfer request refused by policy", extra={"call": event.call})
+                return
+            request = _parse_refer_to(event.text)
+            if request.method != "INVITE":
+                # The policy only auto-dials calls; anything more exotic
+                # is refused rather than guessed at.
+                await self._runtime.cmd(lib.BP_CMD_CALL_TRANSFER_REJECT, args=f"{event.call} 501")
+                return
+            ev, payload = await self._runtime.cmd(
+                lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{event.call} {request.raw}"
+            )
+            data = json.loads(payload) if payload else {}
+            if ev == lib.BP_EV_STALE_HANDLE or "error" in data:
+                logger.warning(
+                    "transfer policy could not execute the request: %s",
+                    data.get("error", "call gone"),
+                    extra={"call": event.call},
+                )
+                return
+            new_call = Call(
+                self._runtime,
+                handle=data["handle"],
+                ua_handle=self._handle,
+                state=CallState.OUTGOING,
+                peer=request.target,
+            )
+            logger.info("transfer request executed by policy", extra={"call": event.call})
+            for callback in list(self._transfer_call_callbacks):
+                try:
+                    callback(new_call)
+                except Exception:
+                    logger.exception("on_transfer_call callback raised; continuing")
+        except BaresipError as exc:
+            logger.warning("transfer policy action failed: %s", exc, extra={"ua": self._handle})
 
     def on_incoming(self, callback) -> None:
         """Invoke ``callback(call)`` for each new inbound call to this agent.

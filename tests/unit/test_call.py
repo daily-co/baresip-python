@@ -18,7 +18,7 @@ import pytest
 native = pytest.importorskip("baresip._native")
 
 from baresip import BaresipError, CallFailed, Event, StackEvent, UnsupportedFeatureError
-from baresip.call import Call, CallState
+from baresip.call import Call, CallState, _parse_refer_to
 from baresip.runtime import Runtime
 
 INCOMING = StackEvent(
@@ -107,6 +107,63 @@ def test_transfer_success_close_text_is_not_an_error_status():
     exc = CallFailed.from_close_reason("Call transfered")
     assert exc.status is None
     assert "transferred" in str(exc)
+
+
+@pytest.mark.parametrize(
+    ("raw", "target", "replaces", "method"),
+    [
+        ("sip:9196@example.com", "sip:9196@example.com", False, "INVITE"),
+        ("<sip:9196@example.com>", "sip:9196@example.com", False, "INVITE"),
+        (
+            "<sip:bob@h.example?Replaces=abc%3Bto-tag%3D1%3Bfrom-tag%3D2>",
+            "sip:bob@h.example",
+            True,
+            "INVITE",
+        ),
+        ("<sip:bob@h.example>;method=BYE", "sip:bob@h.example", False, "BYE"),
+        ("sip:bob@h.example;method=invite", "sip:bob@h.example", False, "INVITE"),
+    ],
+)
+def test_refer_to_parsing(raw, target, replaces, method):
+    request = _parse_refer_to(raw)
+    assert request.target == target
+    assert request.replaces is replaces
+    assert request.method == method
+    assert request.raw == raw
+
+
+async def test_accept_and_reject_require_a_pending_request():
+    call = incoming_call()
+    call._on_stack_event(event_for(call, Event.CALL_ESTABLISHED))
+    with pytest.raises(BaresipError, match="no transfer request"):
+        await call.accept_transfer()
+    with pytest.raises(BaresipError, match="no transfer request"):
+        await call.reject_transfer()
+    call._transfer_request = _parse_refer_to("sip:x@y")
+    with pytest.raises(ValueError):
+        await call.reject_transfer(status=200)  # only failing sipfrags refuse
+
+
+def test_transfer_request_lifecycle_via_events():
+    """The stack gives up on an unanswered request (~60 s subscription
+    timeout → CALL_TRANSFER_FAILED); the binding must reflect that
+    there is nothing left to accept."""
+    call = incoming_call()
+    call._on_stack_event(event_for(call, Event.CALL_ESTABLISHED))
+    seen = []
+    call.on_transfer_request(seen.append)
+    call._on_stack_event(
+        StackEvent(event=Event.CALL_TRANSFER, ua=7, call=call.handle, text="<sip:9196@h>")
+    )
+    assert call.transfer_request is not None
+    assert call.transfer_request.target == "sip:9196@h"
+    assert seen and seen[0].target == "sip:9196@h"
+    call._on_stack_event(
+        StackEvent(
+            event=Event.CALL_TRANSFER_FAILED, ua=7, call=call.handle, text="Connection timed out"
+        )
+    )
+    assert call.transfer_request is None
 
 
 async def test_attended_transfer_guards():

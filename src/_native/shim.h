@@ -85,6 +85,17 @@
  * Outcome reporting is identical to BP_CMD_CALL_TRANSFER. */
 #define BP_CMD_CALL_REPLACE_TRANSFER 16
 
+/* Act on a received transfer request (the CALL_TRANSFER event). The
+ * stack has already 202-accepted the REFER by the time the event is
+ * reported, so these speak through the implicit subscription's NOTIFY
+ * sipfrags. ACCEPT args: "HANDLE RAW_REFER_TO" (rest of line) — dials
+ * the target with the xcall linkage so the core ties the original
+ * leg's fate to the new call; DONE payload {"handle":N} names the new
+ * call. REJECT args: "HANDLE STATUS" — sends the final failing sipfrag
+ * (out-of-range statuses fall back to 603) and the call continues. */
+#define BP_CMD_CALL_TRANSFER_ACCEPT 17
+#define BP_CMD_CALL_TRANSFER_REJECT 18
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */
