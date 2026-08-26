@@ -31,7 +31,9 @@ from baresip.errors import (
     CallFailed,
     CallTimeout,
     StaleHandleError,
+    TransferFailed,
     UnsupportedFeatureError,
+    split_status,
 )
 from baresip.events import Event, StackEvent
 from baresip.runtime import Runtime
@@ -40,8 +42,13 @@ from baresip.stats import CallStats
 logger = logging.getLogger("baresip.call")
 
 _ESTABLISH_TIMEOUT = 30.0
+_TRANSFER_TIMEOUT = 60.0
 _DTMF_DIGITS = "0123456789ABCD*#"
 _DTMF_TONE_MS = 100
+
+# The stack's exact CALL_CLOSED text for a successful transfer (its
+# spelling, one r — matched verbatim).
+_TRANSFER_SUCCESS = "Call transfered"
 
 
 @dataclass(frozen=True)
@@ -104,6 +111,7 @@ class Call:
         self._state = state
         self._on_hold = False
         self._remote_on_hold = False
+        self._transfer_pending = False
         self._close_reason: str | None = None
         self._audio: CallAudio | None = None
         self._listeners: list = []
@@ -407,6 +415,85 @@ class Call:
                 f"{verb} not sent: a session refresh is already in flight; retry shortly"
             )
         self._on_hold = hold
+
+    async def transfer(self, uri: str, *, timeout: float = _TRANSFER_TIMEOUT) -> None:
+        """Blind-transfer the call (REFER) and await the outcome.
+
+        Asks the far end to call ``uri`` instead of talking to us. On
+        success **this call ends**: the stack closes it once the far end
+        reports its new call answered, and this method returns with the
+        call CLOSED. On failure the call survives, still established,
+        and the reported outcome raises.
+
+        The call is not put on hold first — hold before transferring
+        when the far end should not keep hearing media. One transfer at
+        a time: the stack tracks a single REFER subscription per call.
+
+        Args:
+            uri: The SIP URI the far end should call. A bare user part
+                is completed against the account's domain by the stack.
+            timeout: Seconds to wait for the far end's reported outcome
+                (a peer may accept the REFER and never report).
+
+        Raises:
+            ValueError: a URI that cannot travel in a request.
+            TransferFailed: the far end refused or reported a failing
+                outcome, the call closed without one, or no outcome
+                arrived within ``timeout``.
+            StaleHandleError: the call is already gone.
+            BaresipError: the call is not established, a transfer is
+                already in progress, or the stack refused to send.
+        """
+        if not uri or any(c in uri for c in " \r\n"):
+            raise ValueError("uri must be non-empty, single-line, and without spaces")
+        if self._state is not CallState.ESTABLISHED:
+            raise BaresipError("transfer requires an established call")
+        if self._transfer_pending:
+            raise BaresipError("a transfer is already in progress on this call")
+
+        outcome = asyncio.get_running_loop().create_future()
+
+        def listener(event: StackEvent) -> None:
+            if event.call != self._handle or outcome.done():
+                return
+            if event.event is Event.CALL_TRANSFER_FAILED:
+                status, reason = split_status(event.text or "")
+                outcome.set_exception(
+                    TransferFailed(
+                        f"transfer failed: {event.text or 'no reason given'}",
+                        status=status,
+                        reason=reason,
+                    )
+                )
+            elif event.event is Event.CALL_CLOSED:
+                if event.text == _TRANSFER_SUCCESS:
+                    outcome.set_result(None)
+                else:
+                    outcome.set_exception(
+                        TransferFailed(
+                            "call closed before the transfer completed: "
+                            f"{event.text or 'no reason given'}"
+                        )
+                    )
+
+        self._transfer_pending = True
+        self._runtime.subscribe(listener)
+        try:
+            ev, payload = await self._runtime.cmd(
+                lib.BP_CMD_CALL_TRANSFER, args=f"{self._handle} {uri}"
+            )
+            if ev == lib.BP_EV_STALE_HANDLE:
+                raise StaleHandleError("call no longer exists")
+            if payload is not None:
+                errno = json.loads(payload).get("errno", 0)
+                raise BaresipError(f"transfer failed to send: {os.strerror(errno)}")
+            try:
+                await asyncio.wait_for(outcome, timeout)
+            except TimeoutError:
+                raise TransferFailed(f"no transfer outcome within {timeout:g} s") from None
+        finally:
+            self._runtime.unsubscribe(listener)
+            self._transfer_pending = False
 
     async def send_dtmf(self, digits: str, interdigit_ms: int = 120) -> None:
         """Send DTMF digits to the far end.

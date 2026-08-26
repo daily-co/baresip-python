@@ -6,7 +6,7 @@ cover: registration, real calls, RTP.
 
 ## Security posture — read this first
 
-- **The credentials are dummy and committed on purpose.** Accounts `1001`-`1003` share the
+- **The credentials are dummy and committed on purpose.** Accounts `1001`-`1004` share the
   password `bench1234`. They protect nothing; they exist so the auth code paths get exercised.
 - **Everything binds to `127.0.0.1` only** (see `docker-compose.yml`) and the SIP port is a
   non-default one, so the bench cannot collide with — or be mistaken for — a real SIP agent.
@@ -29,11 +29,11 @@ emulation (the image is amd64-only); that is fine at bench scale.
 | SIP | `127.0.0.1:15060` (UDP/TCP) — override the host port with `BENCH_SIP_PORT` |
 | SIP over TLS | `127.0.0.1:15061` — override the host port with `BENCH_TLS_PORT` |
 | RTP | `127.0.0.1:16384–16393` (UDP) |
-| Accounts | `1001` / `1002` (humans), `1003` (automated tests), password `bench1234` |
+| Accounts | `1001` / `1002` (humans), `1003` / `1004` (automated tests), password `bench1234` |
 | `9196` | echo test — you hear yourself |
 | `9664` | playback test — a generated tone |
 | `9486`, `9603` | reject with 486 / 603 before answering (failure-path tests) |
-| `1001`-`1003` | bridges to that registered user |
+| `1001`-`1004` | bridges to that registered user |
 
 Tests read `BENCH_SIP_PORT` (default `15060`) rather than hardcoding the port. Overriding it
 only remaps the host side, while FreeSWITCH keeps advertising port `15060` in its Contact —

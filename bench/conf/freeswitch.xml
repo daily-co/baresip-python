@@ -5,7 +5,7 @@
   Deliberately not the vanilla config tree: every line here is intentional,
   so the whole SIP peer the tests run against fits in one reviewable file.
 
-  Accounts 1001-1003 use a committed dummy password (see README.md). The
+  Accounts 1001-1004 use a committed dummy password (see README.md). The
   stack is only ever reachable on 127.0.0.1 via the compose port mappings.
 
   NAT stance: the container sits behind Docker's port forwarding, so the
@@ -182,9 +182,9 @@
           <action application="respond" data="603 Decline"/>
         </condition>
       </extension>
-      <!-- 1001-1003: bridge to the registered user. -->
+      <!-- 1001-1004: bridge to the registered user. -->
       <extension name="user">
-        <condition field="destination_number" expression="^(100[123])$">
+        <condition field="destination_number" expression="^(100[1234])$">
           <action application="bridge" data="user/$1"/>
         </condition>
       </extension>
@@ -208,9 +208,16 @@
             <param name="password" value="$${default_password}"/>
           </params>
         </user>
-        <!-- Reserved for automated tests, so originates toward it never
-             ring a human's client registered as 1001/1002. -->
+        <!-- 1003 and 1004 are reserved for automated tests, so originates
+             toward them never ring a human's client registered as
+             1001/1002. Two exist so a test can hold both legs of one
+             bridged call (transfer scenarios). -->
         <user id="1003">
+          <params>
+            <param name="password" value="$${default_password}"/>
+          </params>
+        </user>
+        <user id="1004">
           <params>
             <param name="password" value="$${default_password}"/>
           </params>

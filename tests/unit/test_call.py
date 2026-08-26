@@ -17,7 +17,7 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from baresip import BaresipError, Event, StackEvent, UnsupportedFeatureError
+from baresip import BaresipError, CallFailed, Event, StackEvent, UnsupportedFeatureError
 from baresip.call import Call, CallState
 from baresip.runtime import Runtime
 
@@ -81,6 +81,32 @@ def test_remote_hold_tracked_by_events():
     assert call.remote_on_hold
     call._on_stack_event(event_for(call, Event.CALL_RESUME))
     assert not call.remote_on_hold
+
+
+async def test_transfer_requires_an_established_call():
+    call = incoming_call()
+    with pytest.raises(BaresipError, match="requires an established call"):
+        await call.transfer("sip:9196@example.invalid")
+
+
+async def test_transfer_guards_input_and_serializes():
+    call = incoming_call()
+    call._on_stack_event(event_for(call, Event.CALL_ESTABLISHED))
+    for uri in ("", "sip:a@b\nc", "sip:a b"):
+        with pytest.raises(ValueError):
+            await call.transfer(uri)
+    # The stack tracks one REFER subscription per call, so a second
+    # transfer while one is pending must refuse instead of silently
+    # replacing the first.
+    call._transfer_pending = True
+    with pytest.raises(BaresipError, match="already in progress"):
+        await call.transfer("sip:9196@example.invalid")
+
+
+def test_transfer_success_close_text_is_not_an_error_status():
+    exc = CallFailed.from_close_reason("Call transfered")
+    assert exc.status is None
+    assert "transferred" in str(exc)
 
 
 def test_state_advances_only_by_matching_events():

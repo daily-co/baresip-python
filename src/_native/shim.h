@@ -70,6 +70,14 @@
  * in flight. The peer's answer arrives as events. */
 #define BP_CMD_CALL_HOLD 14
 
+/* Blind transfer. Args: "HANDLE URI". Completes when the in-dialog REFER
+ * is issued; the outcome arrives as events — CALL_TRANSFER_FAILED with
+ * "CODE reason" text, or, on success, CALL_CLOSED with the stack's exact
+ * text "Call transfered" (the transferred call ends; there is no
+ * separate success event). The stack tracks one REFER subscription per
+ * call, so callers serialize transfers. */
+#define BP_CMD_CALL_TRANSFER 15
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */

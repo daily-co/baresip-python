@@ -32,6 +32,7 @@ from baresip.errors import (
     RegistrationError,
     RuntimeDead,
     StaleHandleError,
+    TransferFailed,
     UnsupportedFeatureError,
 )
 from baresip.events import Event, StackEvent
@@ -95,6 +96,7 @@ __all__: list[str] = [
     "RuntimeDead",
     "StackEvent",
     "StaleHandleError",
+    "TransferFailed",
     "UnsupportedFeatureError",
     "UserAgent",
 ]

@@ -123,6 +123,8 @@ class CallFailed(BaresipError):
     @classmethod
     def from_close_reason(cls, text: str) -> "CallFailed":
         """The right exception for a CALL_CLOSED reason text."""
+        if text == "Call transfered":  # the stack's exact transfer-success text
+            return cls("call ended: transferred to another party", reason=text)
         status, reason = split_status(text)
         if status == 486:
             return CallBusy(f"call failed: {text}", status=status, reason=reason)
@@ -144,6 +146,28 @@ class CallTimeout(CallFailed):
 
     The pending call is hung up (best effort) before this is raised.
     """
+
+
+class TransferFailed(BaresipError):
+    """A call transfer did not complete.
+
+    The far end refused the REFER, reported a failing outcome (a NOTIFY
+    whose sipfrag carries a 3xx-6xx status), or the call closed before
+    any outcome arrived. The call itself survives a failed transfer.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, reason: str = ""):
+        """Initialize the error.
+
+        Args:
+            message: Full human-readable description.
+            status: The reported SIP status (e.g. 486) when one exists;
+                None for timeouts and transport-level failures.
+            reason: The reported reason phrase, or the error text.
+        """
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
 
 
 class AudioNotActive(BaresipError):

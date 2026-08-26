@@ -20,6 +20,9 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 - Hold and resume: `call.hold()` / `call.resume()` with `call.is_on_hold`, and
   `call.remote_on_hold` tracking the far end's hold state from the `CALL_HOLD`
   / `CALL_RESUME` events.
+- Blind transfer: `call.transfer(uri)` sends an in-dialog REFER and awaits the
+  reported outcome — on success the transferred call closes; failures raise
+  the new `TransferFailed` with the reported SIP status.
 
 - Hardware speaker/microphone audio drivers in the default build: `coreaudio` on macOS,
   `alsa` on Linux (Linux wheels now bundle libasound), selected with
