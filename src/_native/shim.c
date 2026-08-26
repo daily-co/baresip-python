@@ -62,6 +62,7 @@ static mtx_t g_lock;
 static struct mqueue *g_mq = NULL;
 static bool g_running = false; /* gate: bp_cmd accepts pushes  */
 static bool g_in_loop = false; /* re_main is executing         */
+static bool g_drain = false;   /* refuse new inbound calls (re thread only) */
 
 static void lock_init(void)
 {
@@ -796,6 +797,15 @@ static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
     if (ev == BEVENT_CREATE)
         text = NULL;
 
+    /* Draining: refuse new inbound work right here on the re thread —
+     * a busy Python loop cannot leak a ring through. The call is
+     * answered 486 and never surfaced as INCOMING; the CLOSED that the
+     * hangup emits does reach Python, where no wrapper matches it. */
+    if (ev == BEVENT_CALL_INCOMING && call && g_drain) {
+        ua_hangup(ua, call, 486, "Busy Here");
+        return;
+    }
+
     emit_stack_event(ev, ua, call, msg, text);
 
     /* The call is over: no later event can reference it, so this is one
@@ -1220,6 +1230,19 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    case BP_CMD_SET_DRAIN:
+        g_drain = true;
+        bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+
+    case BP_CMD_CALL_COUNT: {
+        char json[32];
+
+        re_snprintf(json, sizeof(json), "{\"calls\":%u}", uag_call_count());
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
     case BP_CMD_CALL_REJECT:
     case BP_CMD_CALL_HANGUP: {
         uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
@@ -1475,6 +1498,7 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
      * Python hook on the SIPSESS_CONN event plus a per-INVITE accept
      * command — instead of surfacing this flag. */
     conf_config()->call.accept = true;
+    g_drain = false;
 
     stage = BP_STAGE_BARESIP;
     err = baresip_init(conf_config());

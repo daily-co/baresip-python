@@ -123,13 +123,16 @@ def test_account_rejects_non_int_reg_interval(value):
 def test_render_defaults_golden():
     # The parser's audio values are strictly "module,device": a bare
     # module must render with a device or the line is silently ignored.
-    assert Config().render() == "audio_source aumem,default\naudio_player aumem,default\n"
+    assert Config().render() == (
+        "audio_source aumem,default\naudio_player aumem,default\ncall_max_calls 2\n"
+    )
 
 
 def test_render_driver_with_device_golden():
     config = Config(audio_driver="aufile,/tmp/greeting.wav")
     assert config.render() == (
         "audio_source aufile,/tmp/greeting.wav\naudio_player aufile,/tmp/greeting.wav\n"
+        "call_max_calls 2\n"
     )
 
 
@@ -140,17 +143,22 @@ def test_render_per_direction_overrides_golden():
     )
     assert config.render() == (
         "audio_source aufile,/tmp/greeting.wav\naudio_player aufile,/tmp/rec.wav\n"
+        "call_max_calls 2\n"
     )
 
 
 def test_render_one_override_keeps_the_driver_for_the_other():
     config = Config(audio_player="aufile,/tmp/rec.wav")
-    assert config.render() == ("audio_source aumem,default\naudio_player aufile,/tmp/rec.wav\n")
+    assert config.render() == (
+        "audio_source aumem,default\naudio_player aufile,/tmp/rec.wav\ncall_max_calls 2\n"
+    )
 
 
 def test_render_bare_override_gets_a_device_too():
     config = Config(audio_source="ausine")
-    assert config.render() == "audio_source ausine,default\naudio_player aumem,default\n"
+    assert config.render() == (
+        "audio_source ausine,default\naudio_player aumem,default\ncall_max_calls 2\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -184,8 +192,17 @@ def test_config_rejects_non_int_call_limit(value):
         Config(max_concurrent_calls=value)
 
 
-def test_reserved_fields_are_accepted():
-    """Present so the configuration surface is stable; not consumed yet."""
+def test_render_call_limit_golden():
+    config = Config(max_concurrent_calls=3)
+    assert config.render().endswith("call_max_calls 3\n")
+
+
+def test_render_none_means_unlimited():
+    config = Config(max_concurrent_calls=None)
+    assert config.render().endswith("call_max_calls 0\n")
+
+
+def test_full_config_surface_is_accepted():
     Config(expose_headers=("X-Customer-Id", "P-Asserted-Identity"), max_concurrent_calls=4)
 
 

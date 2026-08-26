@@ -153,3 +153,10 @@ async def test_unexpected_c_error_is_one_error_record(caplog):
     finally:
         runtime._push_cmd = lib.bp_cmd
         await runtime.close()
+
+
+async def test_drain_requires_a_running_runtime():
+    rt = Runtime()
+    with pytest.raises(BaresipError, match="cannot drain"):
+        await rt.drain()
+    assert not rt.draining

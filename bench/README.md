@@ -28,7 +28,7 @@ emulation (the image is amd64-only); that is fine at bench scale.
 |---|---|
 | SIP | `127.0.0.1:15060` (UDP/TCP) — override the host port with `BENCH_SIP_PORT` |
 | SIP over TLS | `127.0.0.1:15061` — override the host port with `BENCH_TLS_PORT` |
-| RTP | `127.0.0.1:16384–16393` (UDP) |
+| RTP | `127.0.0.1:16384–16403` (UDP) |
 | Accounts | `1001` / `1002` (humans), `1003` / `1004` (automated tests), password `bench1234` |
 | `9196` | echo test — you hear yourself |
 | `9664` | playback test — a generated tone |

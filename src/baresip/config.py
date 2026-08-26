@@ -177,8 +177,14 @@ class Config:
             "error".
         sip_trace: Log every SIP message sent and received, under
             ``baresip.native.sip`` at DEBUG level.
-        max_concurrent_calls: Reserved — accepted and validated, not yet
-            enforced.
+        max_concurrent_calls: Maximum simultaneous calls; a further
+            inbound INVITE is answered 486, and every live call (either
+            direction) counts toward the limit. Defaults to 2 — one
+            conversation plus a consultation leg, the warm-transfer
+            shape. None means unlimited. The stack's own compiled
+            default is 4 — it applies only when the runtime is started
+            from raw configuration text that leaves ``call_max_calls``
+            unset.
     """
 
     audio_driver: str = "aumem"
@@ -187,7 +193,7 @@ class Config:
     expose_headers: tuple[str, ...] = ()
     native_log_level: str = "warning"
     sip_trace: bool = False
-    max_concurrent_calls: int | None = None
+    max_concurrent_calls: int | None = 2
 
     def __post_init__(self):
         if not self.audio_driver:
@@ -245,4 +251,7 @@ class Config:
 
         source = norm(self.audio_source or self.audio_driver)
         player = norm(self.audio_player or self.audio_driver)
-        return f"audio_source {source}\naudio_player {player}\n"
+        # Always written: the stack's compiled default is 4, so leaving
+        # the key unset would silently cap concurrency.
+        limit = self.max_concurrent_calls or 0  # 0 = unlimited
+        return f"audio_source {source}\naudio_player {player}\ncall_max_calls {limit}\n"

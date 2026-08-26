@@ -30,6 +30,15 @@ class CommandTimeout(BaresipError):
     """
 
 
+class DrainingError(BaresipError):
+    """The runtime is draining; new calls are refused.
+
+    Raised by ``dial()`` after :meth:`Runtime.drain
+    <baresip.runtime.Runtime.drain>` has been called. Inbound calls are
+    refused with 486 by the stack itself.
+    """
+
+
 class RuntimeDead(BaresipError):
     """The SIP thread has exited and the runtime can no longer operate.
 

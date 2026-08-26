@@ -64,7 +64,7 @@
       <settings>
         <!-- Must mirror the published UDP range in docker-compose.yml. -->
         <param name="rtp-start-port" value="16384"/>
-        <param name="rtp-end-port" value="16393"/>
+        <param name="rtp-end-port" value="16403"/>
         <param name="loglevel" value="info"/>
       </settings>
     </configuration>

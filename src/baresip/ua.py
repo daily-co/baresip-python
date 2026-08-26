@@ -24,6 +24,7 @@ from baresip.call import Call, CallState, _parse_refer_to
 from baresip.config import Account
 from baresip.errors import (
     BaresipError,
+    DrainingError,
     NoLocalAddressError,
     RegistrationError,
     StaleHandleError,
@@ -234,10 +235,13 @@ class UserAgent:
             StaleHandleError: the native agent no longer exists.
             NoLocalAddressError: no local interface can reach the target
                 (loopback targets need ``net_interface`` pinned).
+            DrainingError: the runtime is draining.
             BaresipError: the stack refused to dial.
         """
         if not uri or any(c in uri for c in "\r\n"):
             raise ValueError("uri must be non-empty and single-line")
+        if self._runtime.draining:
+            raise DrainingError("runtime is draining; new calls are refused")
         args = f"{self._handle} {int(video)} {uri}"
         for name, value in (headers or {}).items():
             if not name or any(c in name for c in "\r\n: "):

@@ -114,6 +114,7 @@ class Runtime:
         self._pending: dict[int, asyncio.Future] = {}
         self._seq = 0
         self._state = "new"  # new -> running -> closing -> closed | dead
+        self._draining = False
         self._dropped_events = 0
         self._push_cmd = lib.bp_cmd  # indirection point, patchable in tests
         self._watchdog_task: asyncio.Task | None = None
@@ -449,6 +450,39 @@ class Runtime:
         if level not in LOG_LEVELS:
             raise ValueError(f"level must be one of {sorted(LOG_LEVELS)}, got {level!r}")
         await self.cmd(lib.BP_CMD_SET_LOG_LEVEL, args=str(LOG_LEVELS[level]))
+
+    @property
+    def draining(self) -> bool:
+        """True once :meth:`drain` has been called; never resets."""
+        return self._draining
+
+    async def drain(self) -> None:
+        """Stop accepting calls and wait until the live ones finish.
+
+        The fleet-rollout half of shutdown: an instance that should
+        take no new work but let current conversations end naturally.
+        One-way for the runtime's remaining life — from here on, new
+        inbound calls are answered 486 on the SIP thread itself, and
+        ``dial()`` raises :class:`~baresip.errors.DrainingError`.
+        Resolves when the stack reports zero live calls; immediately if
+        already idle. :meth:`close` stays valid throughout — call it
+        after (the normal sequence) or instead (abandoning the wait).
+
+        Raises:
+            BaresipError: the runtime is not running.
+        """
+        if self._state != "running":
+            raise BaresipError(f"cannot drain a runtime in state {self._state!r}")
+        if not self._draining:
+            self._draining = True
+            await self.cmd(lib.BP_CMD_SET_DRAIN)
+            logger.info("draining: new calls are now refused")
+        while True:
+            _, payload = await self.cmd(lib.BP_CMD_CALL_COUNT)
+            if json.loads(payload)["calls"] == 0:
+                logger.info("drained: no live calls remain")
+                return
+            await asyncio.sleep(0.2)
 
     async def set_sip_trace(self, enabled: bool) -> None:
         """Log every SIP message sent and received, under

@@ -27,7 +27,7 @@ services:
       # TLS signaling; same parity rule against tls-sip-port.
       - "127.0.0.1:${BENCH_TLS_PORT:-15061}:15061/tcp"
       # RTP: must mirror rtp-start-port/rtp-end-port in conf/freeswitch.xml.
-      - "127.0.0.1:16384-16393:16384-16393/udp"
+      - "127.0.0.1:16384-16403:16384-16403/udp"
     healthcheck:
       test: ["CMD", "fs_cli", "-x", "status"]
       interval: 2s

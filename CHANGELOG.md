@@ -28,6 +28,14 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   both of the application's legs end.
 - `examples/07_warm_transfer.py`: the receptionist pattern — answer, consult,
   bridge the calls in Python audio, then splice and exit.
+- `Config.max_concurrent_calls` is now enforced: beyond the limit, inbound
+  INVITEs are answered 486 before any call exists. The default is 2 (one
+  conversation plus a consultation leg — the warm-transfer shape); None means
+  unlimited. Previously the field was ignored and the stack's compiled default
+  silently capped Config-started runtimes at 4.
+- `runtime.drain()`: stop accepting calls (inbound answered 486 on the SIP
+  thread, `dial()` raises the new `DrainingError`) and resolve once the last
+  live call ends — the fleet-rollout half of shutdown.
 - Receiving transfers: a peer's REFER arrives as a typed `TransferRequest`
   (`call.on_transfer_request` / `call.transfer_request`), executed with
   `call.accept_transfer()` or refused with `call.reject_transfer()`; a

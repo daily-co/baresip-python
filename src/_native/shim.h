@@ -96,6 +96,16 @@
 #define BP_CMD_CALL_TRANSFER_ACCEPT 17
 #define BP_CMD_CALL_TRANSFER_REJECT 18
 
+/* Drain: one-way, no args. From here on every new inbound call is
+ * answered 486 on the re thread itself and never surfaced — a busy
+ * Python loop cannot leak a ring through. Outbound refusal is the
+ * binding's, this only covers what arrives. */
+#define BP_CMD_SET_DRAIN 19
+
+/* The stack's live call count, as {"calls":N}. What drain() polls to
+ * resolve when the last call ends. */
+#define BP_CMD_CALL_COUNT 20
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */
