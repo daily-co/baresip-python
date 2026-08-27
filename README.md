@@ -4,8 +4,9 @@ Python bindings for the [baresip](https://github.com/baresip/baresip) SIP stack 
 embeddable SIP user agent for Python applications: registration, inbound and outbound calls,
 programmatic PCM audio access, and DTMF, with an asyncio-native API.
 
-> **Status: pre-alpha, under active development.** Nothing here is ready for use yet.
-> The first usable release will be `v0.1.0a1` on TestPyPI.
+> **Status: alpha, under active development.** Current release: `v0.1.0a1` on PyPI.
+> The API may still change between pre-releases; every break is called out in the
+> CHANGELOG.
 
 ## What this is
 
@@ -93,11 +94,22 @@ lets you hear yourself — use a headset, there is no echo cancellation.
 SIP_DIAL=sip:9196@127.0.0.1:15060 uv run python examples/06_softphone.py
 ```
 
+**[07 — warm transfer](examples/07_warm_transfer.py).** The receptionist pattern: answer a
+caller, consult a second destination, bridge the two calls in Python audio while staying in
+the path, then splice the parties together with an attended transfer and drop out. Run the
+bot, then call it with the softphone example from a second terminal (the caller must reach
+the bot bridged through the switch — see the example's docstring):
+
+```
+SIP_USER=1001 SIP_PASS=bench1234 uv run python examples/07_warm_transfer.py
+SIP_USER=1002 SIP_DIAL=sip:1001@127.0.0.1:15060 uv run python examples/06_softphone.py
+```
+
 ## Audio and device selection
 
 Audio drivers are chosen when the runtime starts — `Config(audio_source=...,
 audio_player=...)`, one driver per direction — and stay put for the runtime's lifetime;
-there is no mid-call driver switching. This is deliberate for v0.1: audio a program decides
+there is no mid-call driver switching. This is deliberate: audio a program decides
 on at runtime is what the `aumem` driver is for (it is just bytes your code reads and
 writes), and richer switching APIs are planned for a later release. What a "device" means
 belongs to each driver: a WAV path for `aufile`, a tone frequency for `ausine`, the sound
@@ -114,6 +126,35 @@ One deliberate absence: the `100 Trying` that answers an incoming INVITE cannot 
 custom headers. The stack sends it automatically, before the application ever sees the
 call — and it is a hop-by-hop response, so a header on it would die at the first proxy
 anyway. Headers on the final response (answer/reject) are planned for a later release.
+
+## Transfers and hold
+
+Hold/resume (`call.hold()`, with the far end's hold state in `call.remote_on_hold`), blind
+transfer (`call.transfer(uri)`), attended transfer (`call.attended_transfer(consult)`), and
+the receiving side — a peer's REFER as a typed `TransferRequest`, governed by a
+`transfer_policy` that defaults to manual because a transfer is the far end instructing
+your agent to place a call. The semantics have real surprises (a successful transfer
+*closes* your call; that is the protocol, not the binding) — read
+[docs/TRANSFER.md](docs/TRANSFER.md) before building on them. Example 07 is the runnable
+version.
+
+## SIP trunks
+
+Trunk-style connections — no registration, and a digest username that differs from the URI
+user — are `Account(reg_interval=0)` and `Account(auth_user=...)`. What each means, which
+provider products want which shape (Twilio's SIP Domains vs Elastic SIP Trunking split as
+the worked example), and the fail-fast behaviors around them are in
+[docs/TRUNKS.md](docs/TRUNKS.md).
+
+## Fleet operations
+
+Two controls for running agents at scale. `Config(max_concurrent_calls=...)` caps the
+runtime's calls natively — beyond the limit, inbound INVITEs are refused with `486` before
+any call object exists. The default is 2 (one conversation plus a consultation leg, the
+warm-transfer shape); `None` removes the cap. `await runtime.drain()` is the rollout half
+of shutdown: new inbound calls are refused on the SIP thread, `dial()` raises
+`DrainingError`, and the call resolves once the last live call ends — drain, then
+`close()`, and the fleet can retire the instance without dropping anyone mid-sentence.
 
 ## Logging
 
@@ -132,9 +173,6 @@ Linux (x86_64, aarch64) and macOS (Apple Silicon and Intel), CPython 3.11–3.13
 [WSL2](https://learn.microsoft.com/windows/wsl/) is the supported path for now — the Linux
 build runs there as-is; native Windows support is a design goal the code keeps its door
 open for, but it is not built or tested today.
-
-Call transfer (hold/resume, blind and attended REFER) is not in v0.1; it is the headline of
-the next release.
 
 ## Building with GPL codecs (H.264)
 
