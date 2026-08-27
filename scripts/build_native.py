@@ -45,6 +45,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODULES: tuple[str, ...] = (
     "g711",
     "opus",
+    "vp8",
     "srtp",
     "dtls_srtp",
     "ice",

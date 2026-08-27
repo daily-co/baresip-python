@@ -201,7 +201,7 @@ version with a `DeprecationWarning` before removal. The package is fully typed (
 
 BSD 2-Clause. Copyright (c) 2026, Daily. Bundled third-party components (libre, libbaresip)
 are BSD-3-Clause; their notices ship with every distribution. Built wheels additionally
-bundle [OpenSSL](https://openssl-library.org/) and [libopus](https://opus-codec.org/) —
-and, on Linux, ALSA's [libasound](https://www.alsa-project.org/) — under their respective
-licenses; see [docs/UPGRADING.md](docs/UPGRADING.md) for how security releases in those
-propagate here.
+bundle [OpenSSL](https://openssl-library.org/), [libopus](https://opus-codec.org/), and
+[libvpx](https://www.webmproject.org/) — and, on Linux, ALSA's
+[libasound](https://www.alsa-project.org/) — under their respective licenses; see
+[docs/UPGRADING.md](docs/UPGRADING.md) for how security releases in those propagate here.

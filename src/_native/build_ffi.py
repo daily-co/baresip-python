@@ -186,6 +186,7 @@ _extra_link_args = [
     str(LIBBARESIP_A),
     str(LIBRE_A),
     "-lopus",
+    "-lvpx",
     "-lssl",
     "-lcrypto",
     "-lz",
@@ -205,7 +206,7 @@ if platform.system() == "Darwin":
         "-framework",
         "AudioToolbox",
     ]
-    for _formula in ("openssl@3", "opus"):
+    for _formula in ("openssl@3", "opus", "libvpx"):
         _dir = _brew_lib_dir(_formula)
         if _dir:
             _library_dirs.append(str(_dir))

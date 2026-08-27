@@ -79,7 +79,7 @@ manylinux-aarch64-image = "manylinux_2_28"
 before-all = "bash {project}/scripts/cibw_before_all_linux.sh"
 
 [tool.cibuildwheel.macos]
-before-all = "brew install openssl@3 opus && python3 {project}/scripts/build_native.py"
+before-all = "brew install openssl@3 opus libvpx && python3 {project}/scripts/build_native.py"
 # The wheels' macOS floor follows the Homebrew bottles bundled into them,
 # which target the build runner's OS. Lowering the floor means building
 # OpenSSL and opus from source in before-all instead of using brew.
