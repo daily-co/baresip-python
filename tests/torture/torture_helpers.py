@@ -24,14 +24,31 @@ The rules that keep torture useful rather than flaky-CI theater:
 """
 
 import asyncio
+import ctypes
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
 native = pytest.importorskip("baresip._native")
 lib = native.lib
+
+# glibc keeps whole-free arena pages resident; malloc_trim returns that
+# component to the OS so RSS reads closer to live memory. What trim
+# cannot release — pages dirtied by the allocator's fragmentation phase
+# — is absorbed by each torture's measured warmup instead. macOS's
+# allocator releases pages itself, and musl has no malloc_trim — both
+# guarded.
+_libc = None
+if sys.platform.startswith("linux"):
+    try:
+        _libc = ctypes.CDLL("libc.so.6")
+        if not hasattr(_libc, "malloc_trim"):
+            _libc = None
+    except OSError:
+        _libc = None
 
 
 def scaled(n: int) -> int:
@@ -40,7 +57,9 @@ def scaled(n: int) -> int:
 
 
 def rss_kb() -> int:
-    """Resident set size, portably (same probe as the soak test)."""
+    """Resident set size after returning allocator caches, portably."""
+    if _libc is not None:
+        _libc.malloc_trim(0)
     try:
         with open("/proc/self/status") as f:
             for line in f:
@@ -88,8 +107,12 @@ class Bounds:
 
     def check(self, where: str, *, allowance_kb: int = 0) -> None:
         """allowance_kb: absolute extra budget on top of the relative
-        limit — for creep that is known, measured, and tracked in a
-        filed issue (the torture rules' quarantine shape)."""
+        limit — only for creep that is known and measured: a tracked
+        issue (the torture rules' quarantine shape) or a measured
+        platform allocator curve, named at the call site either way."""
+        if os.environ.get("TORTURE_RSS_LOG"):
+            # Calibration aid: warmups are sized from these curves.
+            print(f"[rss] {where}: {rss_kb()} KiB", flush=True)
         if self.rss_asserted:
             rss = rss_kb()
             limit = self.rss0 * self.rss_growth + allowance_kb

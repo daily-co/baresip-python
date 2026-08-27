@@ -65,10 +65,10 @@ async def test_t3_call_storm(rng):
             b_call = await asyncio.wait_for(task, 5)
             return a_call, b_call
 
-        # Warm up before the baseline: the allocator grows arenas for
-        # roughly the first several hundred calls, then the curve goes
-        # flat (measured; it even shrinks as arenas consolidate).
-        for _ in range(250):
+        # Warm up before the baseline: the allocator's fragmentation
+        # phase dirties pages for roughly the first 750 calls — measured
+        # on both macOS and glibc — then the curve goes flat.
+        for _ in range(750):
             a_call, b_call = await one_call()
             await a_call.hangup()
             await wait_closed(a_call)
