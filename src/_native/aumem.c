@@ -11,6 +11,7 @@
 #include <rem.h>
 #include <baresip.h>
 
+#include "bp_sync.h"
 #include "shim.h"
 #include "internal.h"
 
@@ -160,7 +161,7 @@ static void slot_unpublish(uint32_t call_handle, bp_ring *ring)
         return;
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     slot = slot_find(call_handle);
     if (slot) {
         if (slot->tx == ring) {
@@ -178,7 +179,7 @@ static void slot_unpublish(uint32_t call_handle, bp_ring *ring)
         }
         slot->epoch++;
     }
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
 }
 
 /* The alloc/update handlers receive the call's `struct audio *`; the
@@ -254,7 +255,7 @@ static int src_thread(void *v)
              * (silence is what an app with nothing to say wants);
              * partial means audio was flowing and ran dry mid-frame. */
             call_once(&g_audio_lock_once, audio_lock_init);
-            mtx_lock(&g_audio_lock);
+            bp_mtx_lock(&g_audio_lock);
             slot = slot_find(st->call_handle);
             if (slot) {
                 if (got)
@@ -262,7 +263,7 @@ static int src_thread(void *v)
                 else
                     slot->tx_silence_frames++;
             }
-            mtx_unlock(&g_audio_lock);
+            bp_mtx_unlock(&g_audio_lock);
         }
 
         auframe_init(&af, st->prm.fmt, st->sampv, st->sampc, st->prm.srate, st->prm.ch);
@@ -334,7 +335,7 @@ static int src_alloc(struct ausrc_st **stp, const struct ausrc *as, struct ausrc
 
     /* Publish last: Python can reach the ring the moment this unlocks. */
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     slot = slot_find_or_create(handle);
     if (slot) {
         slot->tx = st->ring;
@@ -342,7 +343,7 @@ static int src_alloc(struct ausrc_st **stp, const struct ausrc *as, struct ausrc
         slot->tx_ch = prm->ch;
         slot->tx_ptime = prm->ptime;
     }
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
     if (!slot) {
         warning("aumem: audio slot table full (%d)\n", BP_AUDIO_SLOTS);
         err = ENOMEM;
@@ -408,14 +409,14 @@ static int dec_update(struct aufilt_dec_st **stp, void **ctx, const struct aufil
     }
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     slot = slot_find_or_create(handle);
     if (slot) {
         slot->rx = st->ring;
         slot->rx_srate = prm->srate;
         slot->rx_ch = prm->ch;
     }
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
     if (!slot) {
         warning("aumem: audio slot table full (%d)\n", BP_AUDIO_SLOTS);
         bp_ring_free(st->ring);
@@ -558,10 +559,10 @@ int bp_audio_probe(uint32_t call_handle, struct bp_audio_info *info)
         return EINVAL;
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     slot = g_audio_open ? slot_find(call_handle) : NULL;
     if (!slot) {
-        mtx_unlock(&g_audio_lock);
+        bp_mtx_unlock(&g_audio_lock);
         return ENOENT;
     }
 
@@ -582,7 +583,7 @@ int bp_audio_probe(uint32_t call_handle, struct bp_audio_info *info)
         info->rx_fill = bp_ring_size(slot->rx);
         info->rx_capacity = bp_ring_capacity(slot->rx);
     }
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
     return 0;
 }
 
@@ -597,19 +598,19 @@ int32_t bp_audio_write(uint32_t call_handle, uint32_t epoch, const uint8_t *src,
         len = INT32_MAX;
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     slot = g_audio_open ? slot_find(call_handle) : NULL;
     if (!slot) {
-        mtx_unlock(&g_audio_lock);
+        bp_mtx_unlock(&g_audio_lock);
         return -ENOENT;
     }
     if (slot->epoch != epoch) {
-        mtx_unlock(&g_audio_lock);
+        bp_mtx_unlock(&g_audio_lock);
         return -ESTALE;
     }
     if (slot->tx)
         n = (int32_t)bp_ring_write(slot->tx, src, len);
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
     return n;
 }
 
@@ -624,14 +625,14 @@ int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32
         len = INT32_MAX;
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     slot = g_audio_open ? slot_find(call_handle) : NULL;
     if (!slot) {
-        mtx_unlock(&g_audio_lock);
+        bp_mtx_unlock(&g_audio_lock);
         return -ENOENT;
     }
     if (slot->epoch != epoch) {
-        mtx_unlock(&g_audio_lock);
+        bp_mtx_unlock(&g_audio_lock);
         return -ESTALE;
     }
     if (slot->rx) {
@@ -658,7 +659,7 @@ int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32
         }
         n = (int32_t)bp_ring_read(slot->rx, dst, len);
     }
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
     return n;
 }
 
@@ -671,10 +672,10 @@ int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out)
         return EINVAL;
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     slot = g_audio_open ? slot_find(call_handle) : NULL;
     if (!slot) {
-        mtx_unlock(&g_audio_lock);
+        bp_mtx_unlock(&g_audio_lock);
         return ENOENT;
     }
 
@@ -695,7 +696,7 @@ int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out)
         out->rx_high_water = rs.high_water;
         out->rx_fill = bp_ring_size(slot->rx);
     }
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
     return 0;
 }
 
@@ -720,7 +721,7 @@ static void health_tick(void *arg)
     (void)arg;
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     for (i = 0; i < BP_AUDIO_SLOTS; i++) {
         struct bp_audio_slot *slot = &g_audio_slots[i];
         struct bp_ring_stats rs;
@@ -753,7 +754,7 @@ static void health_tick(void *arg)
             }
         }
     }
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
 
     for (i = 0; i < n; i++) {
         char json[256];
@@ -791,9 +792,9 @@ int bp_aumem_register(void)
     aufilt_register(baresip_aufiltl(), &g_aufilt);
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     g_audio_open = true;
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
 
     tmr_start(&g_health_tmr, BP_AUDIO_HEALTH_MS, health_tick, NULL);
     return 0;
@@ -806,11 +807,11 @@ void bp_aumem_unregister(void)
     tmr_cancel(&g_health_tmr);
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     g_audio_open = false;
     for (i = 0; i < BP_AUDIO_SLOTS; i++)
         memset(&g_audio_slots[i], 0, sizeof(g_audio_slots[i]));
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
 
     aufilt_unregister(&g_aufilt);
     g_ausrc = mem_deref(g_ausrc);
@@ -825,9 +826,9 @@ void bp_aumem_slot_drop(uint32_t call_handle)
         return;
 
     call_once(&g_audio_lock_once, audio_lock_init);
-    mtx_lock(&g_audio_lock);
+    bp_mtx_lock(&g_audio_lock);
     slot = slot_find(call_handle);
     if (slot)
         memset(slot, 0, sizeof(*slot));
-    mtx_unlock(&g_audio_lock);
+    bp_mtx_unlock(&g_audio_lock);
 }

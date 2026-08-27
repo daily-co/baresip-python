@@ -19,6 +19,7 @@
 #include <re_dbg.h>
 #include <baresip.h>
 
+#include "bp_sync.h"
 #include "shim.h"
 #include "internal.h"
 
@@ -160,22 +161,22 @@ static void bp_log_write(uint32_t level, uint32_t channel, const char *msg, size
     hdr.len = (uint32_t)len;
 
     call_once(&g_log_once, log_lock_init);
-    mtx_lock(&g_log_lock);
+    bp_mtx_lock(&g_log_lock);
 
     if (!g_log_reading) {
-        mtx_unlock(&g_log_lock);
+        bp_mtx_unlock(&g_log_lock);
         return;
     }
     if (sizeof(hdr) + len > BP_LOG_RING_BYTES - g_log_used) {
         g_log_dropped++;
-        mtx_unlock(&g_log_lock);
+        bp_mtx_unlock(&g_log_lock);
         return;
     }
 
     ring_put(&hdr, sizeof(hdr));
     ring_put(msg, len);
     cnd_signal(&g_log_cnd);
-    mtx_unlock(&g_log_lock);
+    bp_mtx_unlock(&g_log_lock);
 }
 
 /* baresip's own log levels map one-to-one. */
@@ -210,21 +211,21 @@ static void bp_sip_trace_h(bool tx, enum sip_transp tp, const struct sa *src, co
 void bp_log_start(void)
 {
     call_once(&g_log_once, log_lock_init);
-    mtx_lock(&g_log_lock);
+    bp_mtx_lock(&g_log_lock);
     g_log_head = 0;
     g_log_used = 0;
     g_log_dropped = 0;
     g_log_reading = true;
-    mtx_unlock(&g_log_lock);
+    bp_mtx_unlock(&g_log_lock);
 }
 
 void bp_log_stop(void)
 {
     call_once(&g_log_once, log_lock_init);
-    mtx_lock(&g_log_lock);
+    bp_mtx_lock(&g_log_lock);
     g_log_reading = false;
     cnd_broadcast(&g_log_cnd);
-    mtx_unlock(&g_log_lock);
+    bp_mtx_unlock(&g_log_lock);
 }
 
 int bp_log_read(struct bp_log_rec *rec)
@@ -235,13 +236,13 @@ int bp_log_read(struct bp_log_rec *rec)
         return 0;
 
     call_once(&g_log_once, log_lock_init);
-    mtx_lock(&g_log_lock);
+    bp_mtx_lock(&g_log_lock);
 
     while (!g_log_used && g_log_reading)
-        cnd_wait(&g_log_cnd, &g_log_lock);
+        bp_cnd_wait(&g_log_cnd, &g_log_lock);
 
     if (!g_log_used) { /* stopped, and nothing left to hand over */
-        mtx_unlock(&g_log_lock);
+        bp_mtx_unlock(&g_log_lock);
         return 0;
     }
 
@@ -254,7 +255,7 @@ int bp_log_read(struct bp_log_rec *rec)
     rec->dropped = g_log_dropped;
     g_log_dropped = 0;
 
-    mtx_unlock(&g_log_lock);
+    bp_mtx_unlock(&g_log_lock);
     return 1;
 }
 
@@ -841,9 +842,9 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
 
     case BP_CMD_STOP:
-        mtx_lock(&g_lock);
+        bp_mtx_lock(&g_lock);
         g_running = false;
-        mtx_unlock(&g_lock);
+        bp_mtx_unlock(&g_lock);
         re_cancel();
         break;
 
@@ -1443,10 +1444,10 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
         return EINVAL;
 
     call_once(&g_lock_once, lock_init);
-    mtx_lock(&g_lock);
+    bp_mtx_lock(&g_lock);
 
     if (g_mq) {
-        mtx_unlock(&g_lock);
+        bp_mtx_unlock(&g_lock);
         fprintf(stderr, "baresip shim: bp_loop_init called twice without bp_loop_done\n");
         return EALREADY;
     }
@@ -1535,12 +1536,12 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
         goto out;
 
     g_running = true;
-    mtx_unlock(&g_lock);
+    bp_mtx_unlock(&g_lock);
     return 0;
 
 out:
     loop_unwind(stage);
-    mtx_unlock(&g_lock);
+    bp_mtx_unlock(&g_lock);
     return err;
 }
 
@@ -1549,39 +1550,39 @@ int bp_loop_run(void)
     int err;
 
     call_once(&g_lock_once, lock_init);
-    mtx_lock(&g_lock);
+    bp_mtx_lock(&g_lock);
     if (!g_mq) {
-        mtx_unlock(&g_lock);
+        bp_mtx_unlock(&g_lock);
         fprintf(stderr, "baresip shim: bp_loop_run called without bp_loop_init\n");
         return EINVAL;
     }
     if (g_in_loop) {
-        mtx_unlock(&g_lock);
+        bp_mtx_unlock(&g_lock);
         fprintf(stderr, "baresip shim: bp_loop_run called while the loop is already running\n");
         return EALREADY;
     }
     g_in_loop = true;
-    mtx_unlock(&g_lock);
+    bp_mtx_unlock(&g_lock);
 
     err = re_main(NULL);
 
-    mtx_lock(&g_lock);
+    bp_mtx_lock(&g_lock);
     g_in_loop = false;
-    mtx_unlock(&g_lock);
+    bp_mtx_unlock(&g_lock);
     return err;
 }
 
 int bp_loop_done(void)
 {
     call_once(&g_lock_once, lock_init);
-    mtx_lock(&g_lock);
+    bp_mtx_lock(&g_lock);
     if (!g_mq) {
-        mtx_unlock(&g_lock);
+        bp_mtx_unlock(&g_lock);
         fprintf(stderr, "baresip shim: bp_loop_done called with nothing to tear down\n");
         return EINVAL;
     }
     if (g_in_loop) {
-        mtx_unlock(&g_lock);
+        bp_mtx_unlock(&g_lock);
         fprintf(stderr, "baresip shim: bp_loop_done called while the loop is still "
                         "running; refusing to free a live command queue\n");
         return EBUSY;
@@ -1590,7 +1591,7 @@ int bp_loop_done(void)
     g_running = false;
     g_mq = mem_deref(g_mq);
     loop_unwind(BP_STAGE_UA);
-    mtx_unlock(&g_lock);
+    bp_mtx_unlock(&g_lock);
     return 0;
 }
 
@@ -1613,15 +1614,15 @@ int bp_cmd(int cmd, uint32_t handle, const char *json_args)
     }
 
     call_once(&g_lock_once, lock_init);
-    mtx_lock(&g_lock);
+    bp_mtx_lock(&g_lock);
     if (!g_running || !g_mq) {
-        mtx_unlock(&g_lock);
+        bp_mtx_unlock(&g_lock);
         free(msg->json);
         free(msg);
         return ESHUTDOWN;
     }
     err = mqueue_push(g_mq, cmd, msg);
-    mtx_unlock(&g_lock);
+    bp_mtx_unlock(&g_lock);
 
     if (err) {
         free(msg->json);
