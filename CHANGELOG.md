@@ -4,6 +4,21 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [Unreleased]
+
+### Added
+
+- VP8 video calls: `dial(..., video=True)` and `answer(video=True)` negotiate a
+  video stream (libvpx is now bundled), and `call.video` exchanges it as frames —
+  `write_frame()` queues packed I420 for the paced encoder, `read_frame()` takes
+  decoded frames, `info()` reports geometry/readiness/counters, and
+  `request_keyframe()` asks the far end for a picture update. Frame geometry,
+  pacing, and bitrate come from the new `Config.video_size` / `video_fps` /
+  `video_bitrate`. A peer that declines video (an audio-only switch) leaves a
+  working audio call, with `call.video` raising the new `VideoNotActive`;
+  mid-call renegotiation surfaces as the new `VideoRestarted`, after which the
+  next operation rebinds.
+
 ## [0.2.0a1] - 2026-08-27
 
 The telephony release: hold and resume, blind and attended transfer in both

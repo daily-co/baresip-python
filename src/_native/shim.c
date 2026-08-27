@@ -33,8 +33,8 @@
  * the platform's hardware speaker/mic driver; loading it opens no device.
  */
 static const char *const bp_modules[] = {
-    "g711",      "opus",   "srtp",   "dtls_srtp", "ice",      "stun",
-    "turn",      "aufile", "ausine", "auconv",    "auresamp", "rtcpsummary",
+    "g711",      "opus",   "vp8",    "srtp",   "dtls_srtp", "ice",         "stun",
+    "turn",      "aufile", "ausine", "auconv", "auresamp",  "rtcpsummary",
 #if defined(__APPLE__)
     "coreaudio",
 #elif defined(__linux__)
@@ -1362,6 +1362,20 @@ static void cmd_handler(int id, void *data, void *arg)
         re_snprintf(json, sizeof(json), "{\"ua\":%u,\"call\":%u,\"test\":%u}", n[BP_OBJ_UA],
                     n[BP_OBJ_CALL], n[BP_OBJ_TEST]);
         bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
+    case BP_CMD_CALL_VIDEO_KEYFRAME: {
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+
+        if (!call) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        if (call_video(call))
+            video_req_keyframe(call_video(call));
+        bp_emit(BP_EV_DONE, msg->handle, NULL);
         break;
     }
 

@@ -185,6 +185,12 @@ class Config:
             default is 4 — it applies only when the runtime is started
             from raw configuration text that leaves ``call_max_calls``
             unset.
+        video_size: Video geometry as ``(width, height)``, for both
+            directions: transmitted frames must be exactly this size,
+            and received frames beyond it are dropped (and counted).
+            Applies only to calls made or answered with ``video=True``.
+        video_fps: Transmit frame pacing in frames per second.
+        video_bitrate: VP8 encoder target, in bits per second.
     """
 
     audio_driver: str = "aumem"
@@ -194,6 +200,9 @@ class Config:
     native_log_level: str = "warning"
     sip_trace: bool = False
     max_concurrent_calls: int | None = 2
+    video_size: tuple[int, int] = (640, 480)
+    video_fps: float = 30.0
+    video_bitrate: int = 1_000_000
 
     def __post_init__(self):
         if not self.audio_driver:
@@ -236,6 +245,18 @@ class Config:
                 raise ValueError(
                     f"max_concurrent_calls must be >= 1, got {self.max_concurrent_calls}"
                 )
+        if (
+            len(self.video_size) != 2
+            or not all(isinstance(v, int) and v > 0 for v in self.video_size)
+            or any(isinstance(v, bool) for v in self.video_size)
+        ):
+            raise ValueError(f"video_size must be two positive ints, got {self.video_size!r}")
+        if not self.video_fps > 0:
+            raise ValueError(f"video_fps must be positive, got {self.video_fps!r}")
+        if isinstance(self.video_bitrate, bool) or not isinstance(self.video_bitrate, int):
+            raise TypeError(f"video_bitrate must be an int, got {self.video_bitrate!r}")
+        if self.video_bitrate < 1:
+            raise ValueError(f"video_bitrate must be >= 1, got {self.video_bitrate}")
 
     def render(self) -> str:
         """The configuration text handed to the stack's parser."""
@@ -254,4 +275,17 @@ class Config:
         # Always written: the stack's compiled default is 4, so leaving
         # the key unset would silently cap concurrency.
         limit = self.max_concurrent_calls or 0  # 0 = unlimited
-        return f"audio_source {source}\naudio_player {player}\ncall_max_calls {limit}\n"
+        w, h = self.video_size
+        return (
+            f"audio_source {source}\n"
+            f"audio_player {player}\n"
+            f"call_max_calls {limit}\n"
+            # Video is inert until a call is made or answered with
+            # video=True; the vidmem driver carries frames to and from
+            # Python (call.video) on such calls.
+            "video_source vidmem,default\n"
+            "video_display vidmem,default\n"
+            f'video_size "{w}x{h}"\n'
+            f"video_fps {self.video_fps:g}\n"
+            f"video_bitrate {self.video_bitrate}\n"
+        )

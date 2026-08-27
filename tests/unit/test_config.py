@@ -120,11 +120,23 @@ def test_account_rejects_non_int_reg_interval(value):
 # -- Config.render() -----------------------------------------------------------
 
 
+# Every render ends with the video block; the drivers are fixed (vidmem
+# carries frames to and from Python) and the knobs are Config fields.
+DEFAULT_VIDEO_TAIL = (
+    "video_source vidmem,default\n"
+    "video_display vidmem,default\n"
+    'video_size "640x480"\n'
+    "video_fps 30\n"
+    "video_bitrate 1000000\n"
+)
+
+
 def test_render_defaults_golden():
     # The parser's audio values are strictly "module,device": a bare
     # module must render with a device or the line is silently ignored.
     assert Config().render() == (
         "audio_source aumem,default\naudio_player aumem,default\ncall_max_calls 2\n"
+        + DEFAULT_VIDEO_TAIL
     )
 
 
@@ -132,7 +144,7 @@ def test_render_driver_with_device_golden():
     config = Config(audio_driver="aufile,/tmp/greeting.wav")
     assert config.render() == (
         "audio_source aufile,/tmp/greeting.wav\naudio_player aufile,/tmp/greeting.wav\n"
-        "call_max_calls 2\n"
+        "call_max_calls 2\n" + DEFAULT_VIDEO_TAIL
     )
 
 
@@ -143,7 +155,7 @@ def test_render_per_direction_overrides_golden():
     )
     assert config.render() == (
         "audio_source aufile,/tmp/greeting.wav\naudio_player aufile,/tmp/rec.wav\n"
-        "call_max_calls 2\n"
+        "call_max_calls 2\n" + DEFAULT_VIDEO_TAIL
     )
 
 
@@ -151,6 +163,7 @@ def test_render_one_override_keeps_the_driver_for_the_other():
     config = Config(audio_player="aufile,/tmp/rec.wav")
     assert config.render() == (
         "audio_source aumem,default\naudio_player aufile,/tmp/rec.wav\ncall_max_calls 2\n"
+        + DEFAULT_VIDEO_TAIL
     )
 
 
@@ -158,6 +171,7 @@ def test_render_bare_override_gets_a_device_too():
     config = Config(audio_source="ausine")
     assert config.render() == (
         "audio_source ausine,default\naudio_player aumem,default\ncall_max_calls 2\n"
+        + DEFAULT_VIDEO_TAIL
     )
 
 
@@ -179,6 +193,12 @@ def test_render_bare_override_gets_a_device_too():
         {"expose_headers": ("",)},
         {"native_log_level": "verbose"},
         {"max_concurrent_calls": 0},
+        {"video_size": (0, 480)},
+        {"video_size": (640,)},
+        {"video_size": (True, True)},
+        {"video_fps": 0},
+        {"video_fps": -1.0},
+        {"video_bitrate": 0},
     ],
 )
 def test_config_rejects_bad_values(kwargs):
@@ -194,16 +214,32 @@ def test_config_rejects_non_int_call_limit(value):
 
 def test_render_call_limit_golden():
     config = Config(max_concurrent_calls=3)
-    assert config.render().endswith("call_max_calls 3\n")
+    assert "\ncall_max_calls 3\n" in config.render()
 
 
 def test_render_none_means_unlimited():
     config = Config(max_concurrent_calls=None)
-    assert config.render().endswith("call_max_calls 0\n")
+    assert "\ncall_max_calls 0\n" in config.render()
 
 
 def test_full_config_surface_is_accepted():
     Config(expose_headers=("X-Customer-Id", "P-Asserted-Identity"), max_concurrent_calls=4)
+
+
+def test_render_video_knobs_golden():
+    config = Config(video_size=(320, 240), video_fps=14.5, video_bitrate=512_000)
+    assert config.render().endswith(
+        "video_source vidmem,default\n"
+        "video_display vidmem,default\n"
+        'video_size "320x240"\n'
+        "video_fps 14.5\n"
+        "video_bitrate 512000\n"
+    )
+
+
+def test_config_rejects_non_int_video_bitrate():
+    with pytest.raises(TypeError):
+        Config(video_bitrate=512.0)
 
 
 def test_level_names_match_the_runtime():

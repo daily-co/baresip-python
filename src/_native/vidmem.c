@@ -480,7 +480,8 @@ static int vdisp_display(struct vidisp_st *st, const char *title, const struct v
 
 struct vidmem_dec_st {
     struct vidfilt_dec_st vf; /* base class; must be first */
-    uint32_t call_handle;
+    const struct video *vid;  /* for lazy handle resolution */
+    uint32_t call_handle;     /* 0 until the first decoded frame */
     struct bp_vring *ring;
     bool bypass;
 };
@@ -498,9 +499,7 @@ static int vdec_update(struct vidfilt_dec_st **stp, void **ctx, const struct vid
                        struct vidfilt_prm *prm, const struct video *vid)
 {
     struct vidmem_dec_st *st;
-    struct bp_video_slot *slot;
     struct config_video *cfg = &conf_config()->video;
-    uint32_t handle;
     (void)ctx;
     (void)prm; /* may be NULL; geometry rides each frame */
 
@@ -515,19 +514,36 @@ static int vdec_update(struct vidfilt_dec_st **stp, void **ctx, const struct vid
     st->vf.vf = vf;
 
     /* Attach even when we cannot tap (aufilt lesson: declining crashes
-     * the caller). Bypass is the graceful shape. */
-    handle = call_handle_for_video(vid);
-    if (!handle || !cfg->width || !cfg->height) {
+     * the caller). Bypass is the graceful shape. The call HANDLE is not
+     * resolved here: this update runs during call allocation, before
+     * the handle table has an entry for the call — the first decoded
+     * frame resolves it instead (vdec_frame, same re thread). */
+    if (!cfg->width || !cfg->height) {
         st->bypass = true;
         goto out;
     }
 
-    st->call_handle = handle;
+    st->vid = vid;
     st->ring = vring_alloc(BP_VIDEO_RING_SLOTS, i420_size(cfg->width, cfg->height));
-    if (!st->ring) {
+    if (!st->ring)
         st->bypass = true;
-        goto out;
-    }
+
+out:
+    *stp = &st->vf;
+    return 0;
+}
+
+/* First-frame publication: resolve the call handle (it exists by the
+ * time media flows) and attach the ring to the slot table. */
+static bool vdec_publish(struct vidmem_dec_st *st)
+{
+    struct config_video *cfg = &conf_config()->video;
+    struct bp_video_slot *slot;
+    uint32_t handle;
+
+    handle = call_handle_for_video(st->vid);
+    if (!handle)
+        return false;
 
     call_once(&g_video_lock_once, video_lock_init);
     bp_mtx_lock(&g_video_lock);
@@ -542,14 +558,11 @@ static int vdec_update(struct vidfilt_dec_st **stp, void **ctx, const struct vid
     bp_mtx_unlock(&g_video_lock);
     if (!slot) {
         warning("vidmem: video slot table full (%d)\n", BP_VIDEO_SLOTS);
-        vring_free(st->ring);
-        st->ring = NULL;
         st->bypass = true;
+        return false;
     }
-
-out:
-    *stp = &st->vf;
-    return 0;
+    st->call_handle = handle;
+    return true;
 }
 
 struct pack_ctx {
@@ -584,6 +597,8 @@ static int vdec_frame(struct vidfilt_dec_st *stf, struct vidframe *frame, uint64
     int rc;
 
     if (st->bypass || !frame || frame->fmt != VID_FMT_YUV420P)
+        return 0;
+    if (!st->call_handle && !vdec_publish(st))
         return 0;
 
     rc = vring_write(st->ring, i420_size(frame->size.w, frame->size.h), frame->size.w,
@@ -677,8 +692,11 @@ int32_t bp_video_write(uint32_t call_handle, uint32_t epoch, const uint8_t *i420
         return -ESTALE;
     }
     if (!slot->tx) {
+        /* The direction is not up (renegotiation gap, or never
+         * started): the frame is refused, not an error — mirroring
+         * audio's "accepts none, without error" contract. */
         bp_mtx_unlock(&g_video_lock);
-        return -ENOENT;
+        return -ENOSPC;
     }
     if (len != i420_size(slot->width, slot->height)) {
         bp_mtx_unlock(&g_video_lock);

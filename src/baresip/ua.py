@@ -225,7 +225,7 @@ class UserAgent:
         Args:
             uri: The SIP URI to call (e.g. ``"sip:9196@example.com"``).
             headers: Extra headers for the INVITE, name to value.
-            video: Offer video. Inert until video support ships.
+            video: Offer video (VP8); frames flow via ``call.video``.
 
         Returns:
             The call, in :attr:`~baresip.call.CallState.OUTGOING` state.

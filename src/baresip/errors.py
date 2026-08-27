@@ -197,3 +197,22 @@ class AudioRestarted(BaresipError):
     read/write binds to the new streams — probe
     :meth:`~baresip.audio.CallAudio.info` for their parameters.
     """
+
+
+class VideoNotActive(BaresipError):
+    """The call has no video to exchange.
+
+    Raised by :class:`~baresip.video.CallVideo` operations on a call
+    made without ``video=True``, before its media has started, after
+    the call has closed, or once the runtime is down.
+    """
+
+
+class VideoRestarted(BaresipError):
+    """The call's video streams were replaced mid-call.
+
+    A re-INVITE renegotiated the media, so the streams Python was
+    talking to are gone. Frames buffered across the swap are lost by
+    design; the next read/write binds to the new streams — probe
+    :meth:`~baresip.video.CallVideo.info` again.
+    """

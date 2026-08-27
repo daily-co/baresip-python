@@ -21,7 +21,9 @@ native = pytest.importorskip("baresip._native")
 
 from baresip._native import ffi, lib
 
+from baresip.errors import VideoNotActive
 from baresip.runtime import Runtime
+from baresip.video import CallVideo, VideoFrame
 
 W, H, FPS = 64, 48, 15
 FRAME = W * H + 2 * (W // 2) * (H // 2)  # packed I420 bytes
@@ -168,3 +170,52 @@ async def test_slot_drop_removes_the_slot(slot):
     await slot.cmd(lib.BP_CMD_TEST_VIDEO_SLOT, args=f"{HANDLE} 0 0 0")
     rc, _ = probe()
     assert rc == errno.ENOENT
+
+
+# -- the CallVideo wrapper over the same machinery ---------------------
+
+
+async def test_wrapper_not_active_on_unknown_call(runtime):
+    video = CallVideo(0x0BADF00D, runtime)
+    with pytest.raises(VideoNotActive):
+        video.info()
+    with pytest.raises(VideoNotActive):
+        video.read_frame()
+    with pytest.raises(VideoNotActive):
+        video.write_frame(b"\x00" * FRAME)
+
+
+async def test_wrapper_not_active_after_runtime_close():
+    rt = Runtime()
+    await rt.start()
+    await rt.close()
+    with pytest.raises(VideoNotActive):
+        CallVideo(0x123, rt).info()
+
+
+async def test_wrapper_roundtrip_and_info(slot):
+    video = CallVideo(HANDLE, slot)
+    info = video.info()
+    assert (info.width, info.height, info.fps) == (W, H, float(FPS))
+    assert info.tx_ready and info.rx_ready
+
+    frame = bytes((i * 3) % 256 for i in range(FRAME))
+    assert video.write_frame(frame, timestamp_us=42) is True
+    await slot.cmd(lib.BP_CMD_TEST_VIDEO_LOOP, args=str(HANDLE))
+
+    got = video.read_frame()
+    assert isinstance(got, VideoFrame)
+    assert got.data == frame
+    assert (got.width, got.height, got.timestamp_us) == (W, H, 42)
+    assert video.read_frame() is None
+
+
+async def test_wrapper_write_validates_size_and_reports_full(slot):
+    video = CallVideo(HANDLE, slot)
+    with pytest.raises(ValueError):
+        video.write_frame(b"")
+    with pytest.raises(ValueError):
+        video.write_frame(b"\x00" * (FRAME - 2))
+    for _ in range(4):
+        assert video.write_frame(b"\x00" * FRAME) is True
+    assert video.write_frame(b"\x00" * FRAME) is False

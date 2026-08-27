@@ -35,6 +35,8 @@ from baresip.errors import (
     StaleHandleError,
     TransferFailed,
     UnsupportedFeatureError,
+    VideoNotActive,
+    VideoRestarted,
 )
 from baresip.events import Event, StackEvent
 from baresip.stats import CallStats
@@ -59,6 +61,9 @@ _NATIVE_BACKED = {
     "Runtime": "baresip.runtime",
     "TransferRequest": "baresip.call",
     "UserAgent": "baresip.ua",
+    "CallVideo": "baresip.video",
+    "VideoFrame": "baresip.video",
+    "VideoInfo": "baresip.video",
 }
 
 
@@ -87,6 +92,7 @@ __all__: list[str] = [
     "CallState",
     "CallStats",
     "CallTimeout",
+    "CallVideo",
     "CommandQueueFull",
     "CommandTimeout",
     "Config",
@@ -103,4 +109,8 @@ __all__: list[str] = [
     "TransferRequest",
     "UnsupportedFeatureError",
     "UserAgent",
+    "VideoFrame",
+    "VideoInfo",
+    "VideoNotActive",
+    "VideoRestarted",
 ]

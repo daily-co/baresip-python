@@ -39,6 +39,7 @@ from baresip.errors import (
 from baresip.events import Event, StackEvent
 from baresip.runtime import Runtime
 from baresip.stats import CallStats
+from baresip.video import CallVideo
 
 logger = logging.getLogger("baresip.call")
 
@@ -162,6 +163,7 @@ class Call:
         self._transfer_req_listeners: list = []
         self._close_reason: str | None = None
         self._audio: CallAudio | None = None
+        self._video: CallVideo | None = None
         self._listeners: list = []
         # on_audio_warning registers a wrapper, not the callback itself;
         # this maps callback -> wrapper so off_audio_warning can find it.
@@ -254,6 +256,18 @@ class Call:
         if self._audio is None:
             self._audio = CallAudio(self._handle)
         return self._audio
+
+    @property
+    def video(self) -> CallVideo:
+        """This call's video frames; see :mod:`baresip.video`.
+
+        Always available as an object — its operations raise
+        :class:`~baresip.errors.VideoNotActive` unless the call was made
+        or answered with ``video=True`` and its media is up.
+        """
+        if self._video is None:
+            self._video = CallVideo(self._handle, self._runtime)
+        return self._video
 
     def _on_stack_event(self, event: StackEvent) -> None:
         # The library's own listener: keeps state truthful and fans out to
@@ -360,7 +374,7 @@ class Call:
         by this method returning.
 
         Args:
-            video: Accept with video. Inert until video support ships.
+            video: Accept with video (VP8); frames flow via :attr:`video`.
             headers: Reserved for response headers.
 
         Raises:

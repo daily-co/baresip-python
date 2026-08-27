@@ -106,6 +106,10 @@
  * resolve when the last call ends. */
 #define BP_CMD_CALL_COUNT 20
 
+/* Ask the far end for a video keyframe (RTCP picture-update request).
+ * Args: a call handle in decimal. A no-op on a call without video. */
+#define BP_CMD_CALL_VIDEO_KEYFRAME 21
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */
@@ -370,7 +374,8 @@ int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out);
  *
  * bp_video_probe fills `info` and returns 0, or ENOENT when the call
  * has no video. bp_video_write returns 0 when the frame was queued,
- * -ENOSPC when the ring was full (frame refused), -EINVAL on a length
+ * -ENOSPC when the frame was refused (ring full, or the transmit
+ * direction is not up — a renegotiation gap), -EINVAL on a length
  * that is not one configured frame, and -ENOENT/-ESTALE as audio.
  * bp_video_read returns the frame's byte count (its geometry and
  * timestamp through the out-pointers), 0 when nothing new has arrived,
