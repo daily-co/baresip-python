@@ -265,9 +265,10 @@ def main() -> None:
     for lib in (LIBRE_A, LIBBARESIP_A):
         if not lib.exists():
             raise SystemExit(f"build_ffi: {lib} not found — run `make native` first")
-    # Sanitized objects get their own build dir: the compiler cache only
-    # watches sources, so reusing one dir would silently mix flag sets.
-    tmpdir = REPO_ROOT / "build" / ("ffi-san" if _sanitize else "ffi")
+    # Each sanitize flavor gets its own build dir: the compiler cache only
+    # watches sources, so sharing one dir would silently mix flag sets.
+    flavor = f"ffi-san-{_sanitize.replace(',', '-')}" if _sanitize else "ffi"
+    tmpdir = REPO_ROOT / "build" / flavor
     built = Path(ffi.compile(tmpdir=str(tmpdir), verbose=True))
     dest = REPO_ROOT / "src" / "baresip" / built.name
     # Fresh inode, never an in-place overwrite: macOS caches a vnode's

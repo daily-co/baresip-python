@@ -7,16 +7,20 @@
 #   format  - apply formatting to all Python and C sources
 #
 # Sanitizers (memory errors in the C sources need instrumented builds to
-# surface; CI runs this lane on Linux):
-#   ext-san  - rebuild the extension with ASan+UBSan. Overwrites the
-#              in-place extension: run `make ext` afterwards to restore
-#              the normal build (and keep `make check` meaningful).
-#   test-san - run the unit suite under the sanitized extension
+# surface; CI runs these lanes on Linux):
+#   ext-san   - rebuild the extension with ASan+UBSan. Overwrites the
+#               in-place extension: run `make ext` afterwards to restore
+#               the normal build (and keep `make check` meaningful).
+#   test-san  - run the unit suite under the sanitized extension
+#   ext-tsan  - rebuild the extension with ThreadSanitizer (TSan and
+#               ASan are mutually exclusive — separate target pair,
+#               separate build dir). Same restore caveat as ext-san.
+#   test-tsan - run the thread-boundary test scope under TSan
 #
 # Bench (local FreeSWITCH in docker, see bench/README.md):
 #   bench-up / bench-logs / bench-down
 
-.PHONY: native ext ext-san test test-san check format bench-up bench-logs bench-down
+.PHONY: native ext ext-san ext-tsan test test-san test-tsan check format bench-up bench-logs bench-down
 
 format:
 	uv run ruff format src scripts tests
@@ -37,6 +41,17 @@ ext-san:
 # What test-san runs; the nightly torture lane overrides this to point
 # the same sanitized environment at tests/torture.
 TEST_SAN_ARGS ?= tests/unit
+
+ext-tsan:
+	BP_SANITIZE=thread uv run python src/_native/build_ffi.py
+
+# The TSan scope is deliberately narrow: the lane watches the
+# thread-boundary architecture (re thread / pacing threads / log drain /
+# Python threads over the rings and the handle table), not the whole
+# suite. Expand it only if it catches something.
+TSAN_TESTS = tests/unit/test_ring.py tests/unit/test_lifecycle.py \
+	tests/unit/test_shutdown_paths.py tests/unit/test_runtime.py \
+	tests/unit/test_audio.py
 
 # The ASan runtime must own malloc from CPython's first allocation, so it
 # is preloaded into the python binary itself — never via `uv run`: the
@@ -59,6 +74,17 @@ test-san:
 	UBSAN_OPTIONS=print_stacktrace=1:log_path=$(CURDIR)/build/san-report \
 	.venv/bin/python -m pytest $(TEST_SAN_ARGS); \
 	status=$$?; cat build/san-report.* 2>/dev/null; exit $$status
+
+# The subprocess tests are excluded here: dyld consumes the insertion
+# variable, so their python would load TSan late — and unlike ASan there
+# is no tolerate flag, a late-loaded TSan is fatal. The Linux lane
+# (LD_PRELOAD inherits) covers them.
+test-tsan:
+	rm -f build/tsan-report.*
+	DYLD_INSERT_LIBRARIES=$$(clang -print-file-name=libclang_rt.tsan_osx_dynamic.dylib) \
+	TSAN_OPTIONS=halt_on_error=1:suppressions=$(CURDIR)/sanitizers/tsan.supp:log_path=$(CURDIR)/build/tsan-report \
+	.venv/bin/python -m pytest $(filter-out tests/unit/test_shutdown_paths.py,$(TSAN_TESTS)); \
+	status=$$?; cat build/tsan-report.* 2>/dev/null; exit $$status
 else
 test-san:
 	rm -f build/san-report.*
@@ -68,6 +94,13 @@ test-san:
 	UBSAN_OPTIONS=print_stacktrace=1:log_path=$(CURDIR)/build/san-report \
 	.venv/bin/python -m pytest $(TEST_SAN_ARGS); \
 	status=$$?; cat build/san-report.* 2>/dev/null; exit $$status
+
+test-tsan:
+	rm -f build/tsan-report.*
+	LD_PRELOAD=$$(cc -print-file-name=libtsan.so) \
+	TSAN_OPTIONS=halt_on_error=1:suppressions=$(CURDIR)/sanitizers/tsan.supp:log_path=$(CURDIR)/build/tsan-report \
+	.venv/bin/python -m pytest $(TSAN_TESTS); \
+	status=$$?; cat build/tsan-report.* 2>/dev/null; exit $$status
 endif
 
 check:

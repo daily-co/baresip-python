@@ -1,0 +1,8 @@
+# ThreadSanitizer suppressions for the test-tsan lane.
+#
+# The lane runs an uninstrumented CPython with an instrumented extension:
+# TSan's interceptors see every pthread primitive and allocation, but
+# only the shim/ring/aumem code carries instrumentation. Suppress only
+# interpreter-internal noise here — never a report that names our C
+# sources. Keep each entry commented with what it matches and why it is
+# noise, so the file stays auditable.
