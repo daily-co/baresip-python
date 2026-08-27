@@ -807,13 +807,21 @@ static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
         return;
     }
 
+    /* A call with video just established: point its source at vidmem
+     * with the handle in the device string — the public-API correlation
+     * for transmit video (see vidmem.c). */
+    if (ev == BEVENT_CALL_ESTABLISHED && call)
+        bp_vidmem_call_established(call);
+
     emit_stack_event(ev, ua, call, msg, text);
 
     /* The call is over: no later event can reference it, so this is one
-     * of the two places allowed to free its slot. The audio slot goes
-     * with it — its stream instances die with the call moments later. */
+     * of the two places allowed to free its slot. The audio and video
+     * slots go with it — their stream instances die with the call
+     * moments later. */
     if (ev == BEVENT_CALL_CLOSED && call) {
         bp_aumem_slot_drop(bp_call_handle_find(call));
+        bp_vidmem_slot_drop(bp_call_handle_find(call));
         handle_drop_ptr(call);
     }
 }
@@ -1357,6 +1365,32 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    case BP_CMD_TEST_VIDEO_SLOT: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        uint32_t w = end ? (uint32_t)strtoul(end, &end, 10) : 0;
+        uint32_t ht = end ? (uint32_t)strtoul(end, &end, 10) : 0;
+        uint32_t fps = end ? (uint32_t)strtoul(end, &end, 10) : 0;
+        char json[64];
+        int terr = bp_vidmem_test_slot(h, w, ht, fps);
+
+        if (terr)
+            re_snprintf(json, sizeof(json), "{\"error\":\"slot\",\"errno\":%d}", terr);
+        else
+            re_snprintf(json, sizeof(json), "{\"handle\":%u}", h);
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
+    case BP_CMD_TEST_VIDEO_LOOP: {
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
+        char json[64];
+
+        re_snprintf(json, sizeof(json), "{\"moved\":%d}", bp_vidmem_test_loop(h));
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
     default:
         /* Never silent: an unknown id means a Python/C mismatch. */
         fprintf(stderr, "baresip shim: unknown command id %d\n", id);
@@ -1413,9 +1447,10 @@ static void loop_unwind(enum bp_stage stage)
         handle_drain();
         ua_close();
         module_app_unload();
-        /* After ua_close: every aumem stream instance died with its
-         * call, so unregistering now leaves nothing dangling. */
+        /* After ua_close: every aumem/vidmem stream instance died with
+         * its call, so unregistering now leaves nothing dangling. */
         bp_aumem_unregister();
+        bp_vidmem_unregister();
     }
     if (stage >= BP_STAGE_CONF)
         conf_close();
@@ -1525,9 +1560,12 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
         }
     }
 
-    /* Our own audio driver registers directly — it lives in this
-     * extension, not in the static module set the build compiled. */
+    /* Our own audio and video drivers register directly — they live in
+     * this extension, not in the static module set the build compiled. */
     err = bp_aumem_register();
+    if (err)
+        goto out;
+    err = bp_vidmem_register();
     if (err)
         goto out;
 

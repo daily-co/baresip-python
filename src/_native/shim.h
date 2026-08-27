@@ -41,16 +41,16 @@
 #define BP_CMD_UA_UNREGISTER 8 /* json_args: a UA handle, in decimal */
 
 /* Call commands. Args: a call handle in decimal; ANSWER takes "HANDLE V"
- * where V=1 accepts with video (a hook for later — inert while the build
- * carries no video codecs). Reject and hangup complete when the response
+ * where V=1 accepts with video (VP8, frames through the vidmem driver).
+ * Reject and hangup complete when the response
  * or BYE is issued; the CALL_CLOSED stack event follows immediately and
  * is what invalidates the handle. */
 #define BP_CMD_CALL_ANSWER 9
 #define BP_CMD_CALL_REJECT 10 /* answers 486 Busy Here */
 #define BP_CMD_CALL_HANGUP 11
 
-/* Dial out. Args: first line "HANDLE V URI" (V=1 offers video — inert
- * while the build carries no video codecs); each further line is one
+/* Dial out. Args: first line "HANDLE V URI" (V=1 offers video — VP8,
+ * frames through the vidmem driver); each further line is one
  * "Name: value" header for the INVITE. DONE payload: {"handle":N} or
  * {"error":...}. Progress and outcome arrive as stack events. */
 #define BP_CMD_UA_CONNECT 12
@@ -115,6 +115,8 @@
 #define BP_CMD_TEST_HANDLE_DROP 103  /* json_args: a handle, in decimal */
 #define BP_CMD_TEST_HANDLE_PROBE 104 /* json_args: a handle, in decimal */
 #define BP_CMD_TEST_HANDLE_COUNT 105 /* live slots by type, as JSON */
+#define BP_CMD_TEST_VIDEO_SLOT 106   /* json_args: "HANDLE W H FPS" (W=0 drops) */
+#define BP_CMD_TEST_VIDEO_LOOP 107   /* json_args: a handle; echoes TX into RX */
 
 /* Event ids delivered to bp_event_h.
  *
@@ -352,5 +354,46 @@ struct bp_audio_stats {
 
 /* Fill `out` and return 0, or ENOENT as bp_audio_probe. Any thread. */
 int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out);
+
+/* Programmatic video (the "vidmem" driver).
+ *
+ * When the configuration selects video_source "vidmem", each call's
+ * transmit video comes from a frame ring Python fills, and decoded
+ * receive video is tapped into a second ring Python drains. Callable
+ * from ANY thread and deliberately not commands, like the audio trio.
+ *
+ * Frames are packed I420 (tight strides: w, w/2, w/2), whole frames
+ * only — a reader never sees a torn frame. Geometry is fixed by the
+ * runtime's configured video size: writes must be exactly one
+ * configured-size frame, and received frames that do not fit are
+ * dropped and counted in rx_oversize. Timestamps are microseconds.
+ *
+ * bp_video_probe fills `info` and returns 0, or ENOENT when the call
+ * has no video. bp_video_write returns 0 when the frame was queued,
+ * -ENOSPC when the ring was full (frame refused), -EINVAL on a length
+ * that is not one configured frame, and -ENOENT/-ESTALE as audio.
+ * bp_video_read returns the frame's byte count (its geometry and
+ * timestamp through the out-pointers), 0 when nothing new has arrived,
+ * -EMSGSIZE when `max_len` cannot hold the frame, and -ENOENT/-ESTALE
+ * as audio. A reader that has fallen behind is skipped forward to the
+ * newest frame — live video stays live. */
+struct bp_video_info {
+    uint32_t epoch;
+    uint32_t tx_ready;      /* Python may feed the call        */
+    uint32_t rx_ready;      /* decoded frames are being tapped */
+    uint32_t width, height; /* configured geometry, both directions */
+    uint32_t fps_x1000;     /* negotiated transmit pacing */
+    uint64_t tx_frames;     /* frames the pacer handed to the encoder */
+    uint64_t tx_skipped;    /* stale frames the pacer skipped past    */
+    uint64_t rx_frames;     /* decoded frames delivered into the ring */
+    uint64_t rx_dropped;    /* ring-full drops: nothing is reading    */
+    uint64_t rx_oversize;   /* received frames beyond the slot size   */
+};
+
+int bp_video_probe(uint32_t call_handle, struct bp_video_info *info);
+int32_t bp_video_write(uint32_t call_handle, uint32_t epoch, const uint8_t *i420, uint32_t len,
+                       uint64_t timestamp_us);
+int32_t bp_video_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32_t max_len,
+                      uint32_t *width, uint32_t *height, uint64_t *timestamp_us);
 
 #endif /* BP_SHIM_H */

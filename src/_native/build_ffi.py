@@ -81,6 +81,8 @@ ffi.cdef("""
 #define BP_CMD_TEST_HANDLE_DROP ...
 #define BP_CMD_TEST_HANDLE_PROBE ...
 #define BP_CMD_TEST_HANDLE_COUNT ...
+#define BP_CMD_TEST_VIDEO_SLOT ...
+#define BP_CMD_TEST_VIDEO_LOOP ...
 
 #define BP_EV_PONG ...
 #define BP_EV_DONE ...
@@ -160,6 +162,26 @@ struct bp_audio_stats {
 };
 
 int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out);
+
+// Programmatic video (the vidmem driver) — semantics documented in shim.h.
+struct bp_video_info {
+    uint32_t epoch;
+    uint32_t tx_ready;
+    uint32_t rx_ready;
+    uint32_t width, height;
+    uint32_t fps_x1000;
+    uint64_t tx_frames;
+    uint64_t tx_skipped;
+    uint64_t rx_frames;
+    uint64_t rx_dropped;
+    uint64_t rx_oversize;
+};
+
+int bp_video_probe(uint32_t call_handle, struct bp_video_info *info);
+int32_t bp_video_write(uint32_t call_handle, uint32_t epoch, const uint8_t *i420, uint32_t len,
+                       uint64_t timestamp_us);
+int32_t bp_video_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32_t max_len,
+                      uint32_t *width, uint32_t *height, uint64_t *timestamp_us);
 
 bp_ring *bp_ring_alloc(uint32_t capacity);
 void     bp_ring_free(bp_ring *ring);
@@ -246,6 +268,7 @@ ffi.set_source(
         str(Path(__file__).parent / "shim.c"),
         str(Path(__file__).parent / "ring.c"),
         str(Path(__file__).parent / "aumem.c"),
+        str(Path(__file__).parent / "vidmem.c"),
     ],
     include_dirs=[
         str(Path(__file__).parent),
