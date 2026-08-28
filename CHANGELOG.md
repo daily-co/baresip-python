@@ -25,7 +25,9 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 - `examples/08_video_call.py`: a video call between two instances (direct mode,
   no switch needed) or against a video-capable service — camera or synthetic
   source, live preview in a Tk window (color with numpy installed, grayscale
-  without), full-color Y4M recording for headless machines.
+  without), full-color Y4M recording for headless machines; `AUDIO_DRIVER=coreaudio`
+  (or `alsa`) turns it into a full video softphone with real microphone and
+  speakers.
 
 ## [0.2.0a1] - 2026-08-27
 

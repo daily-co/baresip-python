@@ -33,6 +33,11 @@ Environment:
 
     SIP_LISTEN    direct mode: bind here, skip registration, take calls directly
     SIP_TRANSPORT "udp" (default), "tcp", or "tls" — registrar mode only
+    AUDIO_DRIVER  "coreaudio" (macOS) / "alsa" (Linux) turns this into a
+                  full video softphone: real microphone and speakers (use
+                  a headset — no echo cancellation). Default is silent
+                  programmatic audio, safe for two instances on one
+                  machine.
     VIDEO_SOURCE  capture override, "module,device" — e.g. "v4l2,/dev/video1",
                   or "vidmem" to send synthetic moving bars instead of a camera
     VIDEO_RECORD  path to write received video as Y4M (plays in mpv/ffplay)
@@ -62,6 +67,7 @@ PASSWORD = os.environ.get("SIP_PASS", "")
 DIAL = os.environ.get("SIP_DIAL")
 LISTEN = os.environ.get("SIP_LISTEN")
 TRANSPORT = os.environ.get("SIP_TRANSPORT", "udp")
+AUDIO = os.environ.get("AUDIO_DRIVER", "aumem")
 RECORD = os.environ.get("VIDEO_RECORD")
 CAMERA = "avcapture" if platform.system() == "Darwin" else "v4l2"
 SOURCE = os.environ.get("VIDEO_SOURCE", CAMERA)
@@ -170,7 +176,9 @@ async def main():
     # declined video stream) — without this they are invisible.
     logging.basicConfig(level=logging.DEBUG, format="%(name)s: %(message)s")
     runtime = Runtime()
-    conf = Config(video_source=SOURCE, video_size=(W, H), video_fps=15.0).render()
+    conf = Config(
+        audio_driver=AUDIO, video_source=SOURCE, video_size=(W, H), video_fps=15.0
+    ).render()
 
     def loopback(hostport: str) -> bool:
         host = hostport.rsplit(":", 1)[0]
