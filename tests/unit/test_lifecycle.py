@@ -233,11 +233,17 @@ def test_done_while_running_refuses(capfd):
     EVENTS.clear()
     loop = ReLoop().start()
 
+    # A round-trip first: start() only proves init finished, and done
+    # between init and run is a *valid* teardown — the refusal under
+    # test requires the thread to actually be inside the loop.
+    send(lib.BP_CMD_PING, handle=1)
+    assert wait_until(lambda: len(pongs()) == 1), "loop never started processing"
+
     assert lib.bp_loop_done() == errno.EBUSY
     assert "refusing to free" in capfd.readouterr().err
 
-    send(lib.BP_CMD_PING, handle=1)
-    assert wait_until(lambda: len(pongs()) == 1), "loop must survive the refused call"
+    send(lib.BP_CMD_PING, handle=2)
+    assert wait_until(lambda: len(pongs()) == 2), "loop must survive the refused call"
     loop.stop()
 
 
@@ -245,6 +251,10 @@ def test_run_while_running_refuses():
     """A second bp_loop_run while the loop is live is refused."""
     EVENTS.clear()
     loop = ReLoop().start()
+    # Same start-vs-refusal race as the done test: prove the loop is
+    # actually running before expecting EALREADY.
+    send(lib.BP_CMD_PING, handle=1)
+    assert wait_until(lambda: len(pongs()) == 1), "loop never started processing"
     assert lib.bp_loop_run() == errno.EALREADY
     loop.stop()
 
