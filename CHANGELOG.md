@@ -4,7 +4,10 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
-## [Unreleased]
+## [0.3.0a1] - 2026-08-28
+
+The video release: VP8 calls with programmatic frames, camera capture on both
+platforms, and a video-call example that doubles as a softphone.
 
 ### Added
 
@@ -28,6 +31,14 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   without), full-color Y4M recording for headless machines; `AUDIO_DRIVER=coreaudio`
   (or `alsa`) turns it into a full video softphone with real microphone and
   speakers.
+
+### Known issues
+
+- The two 0.2.0a1 leaks remain open: ~2 KiB retained per runtime start/close
+  cycle ([#1](https://github.com/daily-co/baresip-python/issues/1)), and
+  `close()` during a live call leaking that call's native object graph
+  ([#2](https://github.com/daily-co/baresip-python/issues/2)) — hang up or
+  `drain()` first.
 
 ## [0.2.0a1] - 2026-08-27
 
