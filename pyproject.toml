@@ -36,6 +36,8 @@ dev = [
     "cffi>=2.0",
     # cffi's in-place compile path needs setuptools at runtime on Python >= 3.12.
     "setuptools>=69",
+    # Only the video example's color preview; the library never imports it.
+    "numpy>=1.26",
 ]
 
 [tool.setuptools]

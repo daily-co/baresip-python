@@ -185,6 +185,14 @@ class Config:
             default is 4 — it applies only when the runtime is started
             from raw configuration text that leaves ``call_max_calls``
             unset.
+        video_source: Camera-side override as "module" or
+            "module,device": ``"avcapture"`` on macOS or ``"v4l2"`` on
+            Linux captures a real camera (device: a camera index/name
+            for avcapture, a ``/dev/videoN`` path for v4l2). None uses
+            ``vidmem``, the programmatic driver behind
+            ``call.video.write_frame()`` — under a camera source,
+            ``write_frame()`` has no effect while ``read_frame()``
+            still taps received video.
         video_size: Video geometry as ``(width, height)``, for both
             directions: transmitted frames must be exactly this size,
             and received frames beyond it are dropped (and counted).
@@ -200,6 +208,7 @@ class Config:
     native_log_level: str = "warning"
     sip_trace: bool = False
     max_concurrent_calls: int | None = 2
+    video_source: str | None = None
     video_size: tuple[int, int] = (640, 480)
     video_fps: float = 30.0
     video_bitrate: int = 1_000_000
@@ -207,12 +216,12 @@ class Config:
     def __post_init__(self):
         if not self.audio_driver:
             raise ValueError("audio_driver must not be empty")
-        for field in ("audio_driver", "audio_source", "audio_player"):
+        for field in ("audio_driver", "audio_source", "audio_player", "video_source"):
             value = getattr(self, field)
             if value is None:
                 continue
             if not value:
-                raise ValueError(f"{field} must not be empty; use None for the audio_driver")
+                raise ValueError(f"{field} must not be empty; use None for the default")
             # The configuration parser reads one value per line and stops
             # at whitespace, so neither can be smuggled into a value.
             _reject_chars(field, value, '"')
@@ -283,7 +292,7 @@ class Config:
             # Video is inert until a call is made or answered with
             # video=True; the vidmem driver carries frames to and from
             # Python (call.video) on such calls.
-            "video_source vidmem,default\n"
+            f"video_source {norm(self.video_source or 'vidmem')}\n"
             "video_display vidmem,default\n"
             f'video_size "{w}x{h}"\n'
             f"video_fps {self.video_fps:g}\n"

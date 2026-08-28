@@ -62,8 +62,8 @@ DEFAULT_MODULES: tuple[str, ...] = (
 #: build on that platform. Loading them opens no devices — a device is
 #: only opened when a call actually uses the driver.
 PLATFORM_MODULES: dict[str, tuple[str, ...]] = {
-    "Darwin": ("coreaudio",),
-    "Linux": ("alsa",),
+    "Darwin": ("coreaudio", "avcapture"),
+    "Linux": ("alsa", "v4l2"),
 }
 
 #: Interactive/debug modules, available via --debug-modules for local

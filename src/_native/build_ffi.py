@@ -228,6 +228,15 @@ if platform.system() == "Darwin":
         "CoreAudio",
         "-framework",
         "AudioToolbox",
+        # The avcapture camera driver module:
+        "-framework",
+        "Foundation",
+        "-framework",
+        "CoreMedia",
+        "-framework",
+        "CoreVideo",
+        "-framework",
+        "AVFoundation",
     ]
     for _formula in ("openssl@3", "opus", "libvpx"):
         _dir = _brew_lib_dir(_formula)

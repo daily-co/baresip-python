@@ -193,6 +193,9 @@ def test_render_bare_override_gets_a_device_too():
         {"expose_headers": ("",)},
         {"native_log_level": "verbose"},
         {"max_concurrent_calls": 0},
+        {"video_source": ""},
+        {"video_source": "a" * 16},
+        {"video_source": "v4l2," + "x" * 128},
         {"video_size": (0, 480)},
         {"video_size": (640,)},
         {"video_size": (True, True)},
@@ -224,6 +227,12 @@ def test_render_none_means_unlimited():
 
 def test_full_config_surface_is_accepted():
     Config(expose_headers=("X-Customer-Id", "P-Asserted-Identity"), max_concurrent_calls=4)
+
+
+def test_render_camera_source_golden():
+    config = Config(video_source="avcapture")
+    assert "video_source avcapture,default\n" in config.render()
+    assert "video_display vidmem,default\n" in config.render()
 
 
 def test_render_video_knobs_golden():

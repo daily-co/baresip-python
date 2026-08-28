@@ -18,6 +18,14 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   working audio call, with `call.video` raising the new `VideoNotActive`;
   mid-call renegotiation surfaces as the new `VideoRestarted`, after which the
   next operation rebinds.
+- Camera capture drivers in the default build: `avcapture` on macOS, `v4l2` on
+  Linux, selected with `Config(video_source=...)` — transmitted video then comes
+  from the camera instead of `write_frame()`, while `read_frame()` still taps
+  received video.
+- `examples/08_video_call.py`: a video call between two instances (direct mode,
+  no switch needed) or against a video-capable service — camera or synthetic
+  source, live preview in a Tk window (color with numpy installed, grayscale
+  without), full-color Y4M recording for headless machines.
 
 ## [0.2.0a1] - 2026-08-27
 

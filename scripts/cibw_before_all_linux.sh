@@ -23,7 +23,7 @@ VPX_SHA256=26fcd3db88045dee380e581862a6ef106f49b74b6396ee95c2993a260b4636aa
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-dnf -y install openssl-devel cmake alsa-lib-devel
+dnf -y install openssl-devel cmake alsa-lib-devel libv4l-devel
 
 # libvpx's x86 assembly needs a standalone assembler; other arches use the
 # C compiler.
