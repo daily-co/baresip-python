@@ -2,7 +2,7 @@
 
 Python bindings for the [baresip](https://github.com/baresip/baresip) SIP stack — a complete,
 embeddable SIP user agent for Python applications: registration, inbound and outbound calls,
-programmatic PCM audio access, and DTMF, with an asyncio-native API.
+programmatic PCM audio and VP8 video access, and DTMF, with an asyncio-native API.
 
 > **Status: alpha, under active development.** Current release: `v0.2.0a1` on PyPI.
 > The API may still change between pre-releases; every break is called out in the
@@ -19,10 +19,11 @@ programmatic PCM audio access, and DTMF, with an asyncio-native API.
 
 ## Quick start
 
-Until the first release lands on PyPI, install from a source checkout. You need
-[uv](https://docs.astral.sh/uv/), a C compiler, cmake, and the OpenSSL and opus development
-headers (`apt install cmake libssl-dev libopus-dev` on Debian/Ubuntu,
-`brew install cmake openssl@3 opus` on macOS):
+Releases install from PyPI (`pip install --pre baresip-python` — pre-releases need the
+flag). For development, build from a source checkout: you need
+[uv](https://docs.astral.sh/uv/), a C compiler, cmake, and the OpenSSL, opus, and libvpx
+development headers (`apt install cmake libssl-dev libopus-dev libvpx-dev libv4l-dev` on
+Debian/Ubuntu, `brew install cmake openssl@3 opus libvpx` on macOS):
 
 ```
 git clone --recurse-submodules https://github.com/daily-co/baresip-python.git
@@ -105,6 +106,17 @@ SIP_USER=1001 SIP_PASS=bench1234 uv run python examples/07_warm_transfer.py
 SIP_USER=1002 SIP_DIAL=sip:1001@127.0.0.1:15060 uv run python examples/06_softphone.py
 ```
 
+**[08 — video call](examples/08_video_call.py).** Your camera on a VP8 call, the far end's
+video in a window. Two instances call each other directly — no switch in the middle (the
+bench declines video) — each showing the other's camera; macOS asks for camera permission
+on first run. Add `AUDIO_DRIVER=coreaudio` (macOS) or `alsa` (Linux) for a full video
+softphone with real microphone and speakers:
+
+```
+SIP_LISTEN=127.0.0.1:5070 uv run python examples/08_video_call.py
+SIP_LISTEN=127.0.0.1:5072 SIP_DIAL=sip:alice@127.0.0.1:5070 uv run python examples/08_video_call.py
+```
+
 ## Audio and device selection
 
 Audio drivers are chosen when the runtime starts — `Config(audio_source=...,
@@ -137,6 +149,16 @@ your agent to place a call. The semantics have real surprises (a successful tran
 *closes* your call; that is the protocol, not the binding) — read
 [docs/TRANSFER.md](docs/TRANSFER.md) before building on them. Example 07 is the runnable
 version.
+
+## Video
+
+Calls made or answered with ``video=True`` negotiate VP8, and `call.video` exchanges it as
+packed I420 frames — `write_frame()` feeds the paced encoder, `read_frame()` takes decoded
+frames, and camera capture (`avcapture` on macOS, `v4l2` on Linux) is pure configuration
+via `Config(video_source=...)`. The library deliberately ships no display: rendering
+belongs to the application on its main thread, and [docs/VIDEO.md](docs/VIDEO.md) explains
+the frames contract, the readiness and renegotiation semantics, and why that display
+stance is the only one that works.
 
 ## SIP trunks
 
