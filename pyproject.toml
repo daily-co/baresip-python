@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Communications :: Internet Phone",
     "Topic :: Communications :: Telephony",
 ]
@@ -62,7 +63,7 @@ version = { attr = "baresip.__version__" }
 [tool.cibuildwheel]
 # One wheel per interpreter: the extension is a cffi API-mode module,
 # compiled against each CPython's ABI (not abi3).
-build = "cp311-* cp312-* cp313-*"
+build = "cp311-* cp312-* cp313-* cp314-*"
 # manylinux only: the Linux before-all is dnf/AlmaLinux-specific, and musl
 # users can build from source. Without this, cibuildwheel also schedules
 # musllinux builds by default.
