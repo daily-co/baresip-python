@@ -110,6 +110,35 @@ async def test_echo_carries_our_pcm(bench_ua):
     await call.hangup()
 
 
+async def test_flush_tx_discards_buffered_audio(bench_ua):
+    call, info = await dial_ready(bench_ua)
+    rate = info.tx_sample_rate
+
+    # Two seconds written at once: the pacer transmits in real time, so
+    # almost all of it is still buffered when the flush lands.
+    written = call.audio.write(sine(rate, 2.0))
+    assert call.audio.stats().tx_buffered > 0
+    call.audio.flush_tx()
+
+    # The drain happens on the transmit thread's next tick.
+    deadline = asyncio.get_running_loop().time() + 1
+    while asyncio.get_running_loop().time() < deadline:
+        st = call.audio.stats()
+        if st.tx_flushed_bytes:
+            break
+        await asyncio.sleep(0.02)
+    st = call.audio.stats()
+
+    # Most of the two seconds was flushed rather than played, and the
+    # buffer is down to (at most) frames already in flight.
+    assert st.tx_flushed_bytes > written // 2
+    assert st.tx_buffered < written // 10
+
+    # The transmit path still works after a flush.
+    assert call.audio.write(sine(rate, 0.2)) > 0
+    await call.hangup()
+
+
 async def test_two_calls_carry_independent_audio(bench_ua):
     call_a, info_a = await dial_ready(bench_ua)
     call_b, info_b = await dial_ready(bench_ua)

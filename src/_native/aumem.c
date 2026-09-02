@@ -86,6 +86,12 @@ struct bp_audio_slot {
     uint32_t tx_srate, tx_ch, tx_ptime;
     uint32_t rx_srate, rx_ch;
 
+    /* Transmit flush: Python raises the request (atomic, any thread);
+     * the source thread — the transmit ring's one consumer — performs
+     * the drain on its next tick, keeping the SPSC contract intact. */
+    RE_ATOMIC bool tx_flush_req;
+    uint64_t tx_flushed; /* bytes drained by flush requests */
+
     /* Health counters, current-stream lifetime (zeroed on unpublish,
      * like the ring they describe). Written under g_audio_lock. */
     uint64_t tx_silence_frames; /* pacing ticks that found nothing: idle */
@@ -168,7 +174,9 @@ static void slot_unpublish(uint32_t call_handle, bp_ring *ring)
             slot->tx = NULL;
             slot->tx_silence_frames = 0;
             slot->tx_starved_frames = 0;
+            slot->tx_flushed = 0;
             slot->prev_tx_starved = 0;
+            re_atomic_rlx_set(&slot->tx_flush_req, false);
         }
         if (slot->rx == ring) {
             slot->rx = NULL;
@@ -209,7 +217,8 @@ static uint32_t call_handle_for_audio(const struct audio *au)
 
 struct ausrc_st {
     uint32_t call_handle;
-    bp_ring *ring; /* owned; freed only after the thread is joined */
+    bp_ring *ring;              /* owned; freed only after the thread is joined */
+    struct bp_audio_slot *slot; /* cached by src_thread; slots are static */
     struct ausrc_prm prm;
     size_t sampc;
     size_t frame_bytes;
@@ -243,6 +252,33 @@ static int src_thread(void *v)
         struct auframe af;
         uint32_t got;
         int dt;
+
+        /* A requested flush drains here: this thread is the transmit
+         * ring's one consumer, so draining anywhere else would break
+         * the SPSC contract. The atomic flag keeps the healthy path
+         * lock-free; the slot pointer is looked up once (slots are a
+         * static array, so the pointer stays dereferenceable). */
+        if (!st->slot) {
+            call_once(&g_audio_lock_once, audio_lock_init);
+            bp_mtx_lock(&g_audio_lock);
+            st->slot = slot_find(st->call_handle);
+            bp_mtx_unlock(&g_audio_lock);
+        }
+        if (st->slot && re_atomic_rlx(&st->slot->tx_flush_req)) {
+            call_once(&g_audio_lock_once, audio_lock_init);
+            bp_mtx_lock(&g_audio_lock);
+            /* Only the currently published ring's thread may act: a
+             * mismatch means the flag belongs to a newer publish. */
+            if (st->slot->tx == st->ring) {
+                uint32_t drained;
+                do {
+                    drained = bp_ring_read(st->ring, st->sampv, (uint32_t)st->frame_bytes);
+                    st->slot->tx_flushed += drained;
+                } while (drained);
+                re_atomic_rlx_set(&st->slot->tx_flush_req, false);
+            }
+            bp_mtx_unlock(&g_audio_lock);
+        }
 
         got = bp_ring_read(st->ring, st->sampv, (uint32_t)st->frame_bytes);
         if (got < st->frame_bytes) {
@@ -614,6 +650,27 @@ int32_t bp_audio_write(uint32_t call_handle, uint32_t epoch, const uint8_t *src,
     return n;
 }
 
+int bp_audio_flush_tx(uint32_t call_handle, uint32_t epoch)
+{
+    struct bp_audio_slot *slot;
+
+    call_once(&g_audio_lock_once, audio_lock_init);
+    bp_mtx_lock(&g_audio_lock);
+    slot = g_audio_open ? slot_find(call_handle) : NULL;
+    if (!slot) {
+        bp_mtx_unlock(&g_audio_lock);
+        return -ENOENT;
+    }
+    if (slot->epoch != epoch) {
+        bp_mtx_unlock(&g_audio_lock);
+        return -ESTALE;
+    }
+    if (slot->tx)
+        re_atomic_rlx_set(&slot->tx_flush_req, true);
+    bp_mtx_unlock(&g_audio_lock);
+    return 0;
+}
+
 int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32_t len)
 {
     struct bp_audio_slot *slot;
@@ -683,6 +740,7 @@ int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out)
     out->epoch = slot->epoch;
     out->tx_silence_frames = slot->tx_silence_frames;
     out->tx_starved_frames = slot->tx_starved_frames;
+    out->tx_flushed = slot->tx_flushed;
     out->rx_discarded = slot->rx_discarded;
     if (slot->tx) {
         bp_ring_stats_get(slot->tx, &rs);

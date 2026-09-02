@@ -88,6 +88,8 @@ class AudioStats:
             keep pace; this is what transmit warnings key off.
         tx_rejected_bytes: Bytes :meth:`CallAudio.write` could not take
             (buffer full) — the same shortfall its return value reports.
+        tx_flushed_bytes: Bytes discarded by :meth:`CallAudio.flush_tx`
+            requests before they reached the wire.
         tx_buffered: Bytes written but not yet transmitted.
         tx_high_water: Deepest transmit fill seen so far.
         rx_dropped_bytes: Received bytes discarded because the buffer was
@@ -101,6 +103,7 @@ class AudioStats:
     tx_silence_frames: int
     tx_starved_frames: int
     tx_rejected_bytes: int
+    tx_flushed_bytes: int
     tx_buffered: int
     tx_high_water: int
     rx_dropped_bytes: int
@@ -195,6 +198,7 @@ class CallAudio:
             tx_silence_frames=st.tx_silence_frames,
             tx_starved_frames=st.tx_starved_frames,
             tx_rejected_bytes=st.tx_rejected,
+            tx_flushed_bytes=st.tx_flushed,
             tx_buffered=st.tx_fill,
             tx_high_water=st.tx_high_water,
             rx_dropped_bytes=st.rx_dropped,
@@ -222,6 +226,22 @@ class CallAudio:
         epoch = self._ensure_bound()
         n = lib.bp_audio_write(self._handle, epoch, ffi.from_buffer("uint8_t[]", pcm), len(pcm))
         return self._checked(n)
+
+    def flush_tx(self) -> None:
+        """Discard PCM that is written but not yet transmitted.
+
+        The transmit thread drains the buffer on its next tick, so at
+        most one frame (one ptime, typically 20 ms) already handed to
+        the encoder can still reach the wire. Discarded bytes are
+        counted in :attr:`AudioStats.tx_flushed_bytes`. Built for
+        interruptions: stop writing, flush, resume with the new audio.
+
+        Raises:
+            AudioNotActive: the call has no audio (yet, or anymore).
+            AudioRestarted: renegotiation replaced the streams.
+        """
+        epoch = self._ensure_bound()
+        self._checked(lib.bp_audio_flush_tx(self._handle, epoch))
 
     def read(self, max_bytes: int) -> bytes:
         """Take up to ``max_bytes`` of received PCM; b"" when none yet.

@@ -344,7 +344,8 @@ int32_t bp_audio_read(uint32_t call_handle, uint32_t epoch, uint8_t *dst, uint32
  * (something is reading, but too far behind). tx_rejected counts bytes
  * bp_audio_write could not take — the caller already sees that in the
  * return value; it is repeated here so one snapshot tells the whole
- * story. */
+ * story. tx_flushed counts bytes bp_audio_flush_tx requests discarded
+ * before they reached the wire. */
 struct bp_audio_stats {
     uint32_t epoch;
     uint32_t tx_fill, tx_high_water;
@@ -352,12 +353,20 @@ struct bp_audio_stats {
     uint64_t tx_silence_frames;
     uint64_t tx_starved_frames;
     uint64_t tx_rejected;
+    uint64_t tx_flushed;
     uint64_t rx_dropped;
     uint64_t rx_discarded;
 };
 
 /* Fill `out` and return 0, or ENOENT as bp_audio_probe. Any thread. */
 int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out);
+
+/* Discard PCM that is written but not yet transmitted. The drain runs on
+ * the transmit thread's next tick (within one frame), so at most one
+ * frame already handed to the encoder can still reach the wire; the
+ * discarded bytes are counted in tx_flushed. Returns 0, or -ENOENT /
+ * -ESTALE as bp_audio_write. Any thread. */
+int bp_audio_flush_tx(uint32_t call_handle, uint32_t epoch);
 
 /* Programmatic video (the "vidmem" driver).
  *

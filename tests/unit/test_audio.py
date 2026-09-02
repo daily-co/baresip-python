@@ -39,6 +39,8 @@ async def test_unknown_call_has_no_audio(runtime):
     with pytest.raises(AudioNotActive):
         audio.write(b"\x00" * 320)
     with pytest.raises(AudioNotActive):
+        audio.flush_tx()
+    with pytest.raises(AudioNotActive):
         audio.stats()
 
 
@@ -49,6 +51,8 @@ async def test_audio_is_not_active_after_runtime_close():
     # The native gate is shut: a fail-fast error, never a crash.
     with pytest.raises(AudioNotActive):
         CallAudio(0x123).info()
+    with pytest.raises(AudioNotActive):
+        CallAudio(0x123).flush_tx()
     with pytest.raises(AudioNotActive):
         CallAudio(0x123).stats()
 

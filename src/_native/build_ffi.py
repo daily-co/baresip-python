@@ -158,11 +158,13 @@ struct bp_audio_stats {
     uint64_t tx_silence_frames;
     uint64_t tx_starved_frames;
     uint64_t tx_rejected;
+    uint64_t tx_flushed;
     uint64_t rx_dropped;
     uint64_t rx_discarded;
 };
 
 int bp_audio_stats_get(uint32_t call_handle, struct bp_audio_stats *out);
+int bp_audio_flush_tx(uint32_t call_handle, uint32_t epoch);
 
 // Programmatic video (the vidmem driver) — semantics documented in shim.h.
 struct bp_video_info {
