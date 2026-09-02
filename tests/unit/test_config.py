@@ -193,6 +193,7 @@ def test_render_bare_override_gets_a_device_too():
         {"expose_headers": ("",)},
         {"native_log_level": "verbose"},
         {"max_concurrent_calls": 0},
+        {"rtp_timeout": -1},
         {"video_source": ""},
         {"video_source": "a" * 16},
         {"video_source": "v4l2," + "x" * 128},
@@ -213,6 +214,21 @@ def test_config_rejects_bad_values(kwargs):
 def test_config_rejects_non_int_call_limit(value):
     with pytest.raises(TypeError):
         Config(max_concurrent_calls=value)
+
+
+@pytest.mark.parametrize("value", [True, "60", 60.0])
+def test_config_rejects_non_int_rtp_timeout(value):
+    with pytest.raises(TypeError):
+        Config(rtp_timeout=value)
+
+
+def test_render_rtp_timeout_golden():
+    assert "\nrtp_timeout 60\n" in Config(rtp_timeout=60).render()
+
+
+def test_render_rtp_timeout_disabled_is_absent():
+    # 0 matches the stack's compiled default, so the key is omitted.
+    assert "rtp_timeout" not in Config().render()
 
 
 def test_render_call_limit_golden():

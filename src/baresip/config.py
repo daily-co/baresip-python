@@ -185,6 +185,14 @@ class Config:
             default is 4 — it applies only when the runtime is started
             from raw configuration text that leaves ``call_max_calls``
             unset.
+        rtp_timeout: Seconds without received RTP after which a call is
+            declared dead and closed (close reason ``"rtp stream
+            error"``). RTP normally flows continuously — even silence is
+            packetized — so this catches peers that vanish without a BYE:
+            a crashed device, a network partition, an expired NAT
+            binding. Direction-aware: a stream that is not receiving by
+            negotiation (held, send-only) is not checked. 0 (the
+            default) disables detection.
         video_source: Camera-side override as "module" or
             "module,device": ``"avcapture"`` on macOS or ``"v4l2"`` on
             Linux captures a real camera (device: a camera index/name
@@ -208,6 +216,7 @@ class Config:
     native_log_level: str = "warning"
     sip_trace: bool = False
     max_concurrent_calls: int | None = 2
+    rtp_timeout: int = 0
     video_source: str | None = None
     video_size: tuple[int, int] = (640, 480)
     video_fps: float = 30.0
@@ -254,6 +263,10 @@ class Config:
                 raise ValueError(
                     f"max_concurrent_calls must be >= 1, got {self.max_concurrent_calls}"
                 )
+        if isinstance(self.rtp_timeout, bool) or not isinstance(self.rtp_timeout, int):
+            raise TypeError(f"rtp_timeout must be an int, got {self.rtp_timeout!r}")
+        if self.rtp_timeout < 0:
+            raise ValueError(f"rtp_timeout must be >= 0, got {self.rtp_timeout}")
         if (
             len(self.video_size) != 2
             or not all(isinstance(v, int) and v > 0 for v in self.video_size)
@@ -285,10 +298,14 @@ class Config:
         # the key unset would silently cap concurrency.
         limit = self.max_concurrent_calls or 0  # 0 = unlimited
         w, h = self.video_size
+        # Only when enabled: the stack's compiled default is already
+        # 0 (detection off), so an absent key changes nothing.
+        timeout = f"rtp_timeout {self.rtp_timeout}\n" if self.rtp_timeout else ""
         return (
             f"audio_source {source}\n"
             f"audio_player {player}\n"
             f"call_max_calls {limit}\n"
+            f"{timeout}"
             # Video is inert until a call is made or answered with
             # video=True; the vidmem driver carries frames to and from
             # Python (call.video) on such calls.
