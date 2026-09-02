@@ -1252,6 +1252,42 @@ static void cmd_handler(int id, void *data, void *arg)
         break;
     }
 
+    case BP_CMD_AUDIO_DRIVERS: {
+        /* Names are compiled-in module identifiers, so no JSON escaping
+         * is needed and a fixed buffer comfortably holds them all. */
+        char json[512] = "{\"ausrc\":[";
+        size_t off = strlen(json);
+        struct le *le;
+        int n;
+
+        LIST_FOREACH(baresip_ausrcl(), le)
+        {
+            const struct ausrc *as = le->data;
+
+            n = re_snprintf(&json[off], sizeof(json) - off, "%s\"%s\"", le->prev ? "," : "",
+                            as->name);
+            if (n < 0)
+                break;
+            off += (size_t)n;
+        }
+        n = re_snprintf(&json[off], sizeof(json) - off, "],\"auplay\":[");
+        if (n > 0)
+            off += (size_t)n;
+        LIST_FOREACH(baresip_auplayl(), le)
+        {
+            const struct auplay *ap = le->data;
+
+            n = re_snprintf(&json[off], sizeof(json) - off, "%s\"%s\"", le->prev ? "," : "",
+                            ap->name);
+            if (n < 0)
+                break;
+            off += (size_t)n;
+        }
+        re_snprintf(&json[off], sizeof(json) - off, "]}");
+        bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
     case BP_CMD_CALL_REJECT:
     case BP_CMD_CALL_HANGUP: {
         uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;

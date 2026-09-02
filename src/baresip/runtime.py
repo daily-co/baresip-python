@@ -135,10 +135,25 @@ class Runtime:
         """
         sip_trace = False
         expose_headers: tuple[str, ...] = ()
+        audio_drivers: tuple[tuple[str, str, str], ...] = ()
         if isinstance(config, Config):
             self._native_log_level = LOG_LEVELS[config.native_log_level]
             sip_trace = config.sip_trace
             expose_headers = config.expose_headers
+            # (config field, registry, module) for the startup driver
+            # check; raw-text starts skip it — the fields are unknown.
+            audio_drivers = (
+                (
+                    "audio_source" if config.audio_source else "audio_driver",
+                    "ausrc",
+                    (config.audio_source or config.audio_driver).split(",")[0],
+                ),
+                (
+                    "audio_player" if config.audio_player else "audio_driver",
+                    "auplay",
+                    (config.audio_player or config.audio_driver).split(",")[0],
+                ),
+            )
             config = config.render()
         # The parser rejects an empty buffer, so "no settings" still needs
         # something to parse.
@@ -186,6 +201,8 @@ class Runtime:
                 raise BaresipError(f"SIP thread failed to start: {detail}")
 
             self._state = "running"
+            if audio_drivers:
+                await self._validate_audio_drivers(audio_drivers)
             if expose_headers:
                 await self.cmd(lib.BP_CMD_SET_EXPOSE_HEADERS, args=",".join(expose_headers))
             if sip_trace:
@@ -383,6 +400,25 @@ class Runtime:
         logger.critical("could not queue STOP: command queue stayed full")
 
     # -- commands ------------------------------------------------------------
+
+    async def _validate_audio_drivers(self, wanted: tuple[tuple[str, str, str], ...]) -> None:
+        """Fail start() when a configured audio driver is not registered.
+
+        A typo'd module name passes Config validation — parseability is
+        all a Config can check — and would otherwise surface only when
+        the first call fails to allocate its audio stream. Asks the
+        stack's ausrc/auplay registries directly.
+        """
+        _, payload = await self.cmd(lib.BP_CMD_AUDIO_DRIVERS)
+        registered = json.loads(payload or b"{}")
+        for field, registry, module in wanted:
+            names = registered.get(registry, [])
+            if module not in names:
+                kind = "source" if registry == "ausrc" else "player"
+                raise BaresipError(
+                    f"Config.{field} names {module!r}, which is not a registered "
+                    f"audio {kind} driver (registered: {', '.join(names) or 'none'})"
+                )
 
     async def cmd(
         self, cmd_id: int, *, args: str | bytes | None = None, timeout: float | None = None

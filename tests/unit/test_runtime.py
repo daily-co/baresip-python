@@ -73,6 +73,37 @@ async def test_restart_after_clean_close_is_allowed():
         await second.close()
 
 
+async def test_audio_drivers_query_reports_aumem():
+    runtime = Runtime()
+    await runtime.start()
+    try:
+        _, payload = await runtime.cmd(lib.BP_CMD_AUDIO_DRIVERS)
+        import json
+
+        registered = json.loads(payload)
+        assert "aumem" in registered["ausrc"]
+        assert "aumem" in registered["auplay"]
+    finally:
+        await runtime.close()
+
+
+async def test_typoed_audio_driver_fails_start_loudly():
+    from baresip import Config
+
+    runtime = Runtime()
+    with pytest.raises(BaresipError, match="aumen.*not a registered audio source"):
+        await runtime.start(Config(audio_driver="aumen"))
+
+    # The failed start tore down cleanly: a fresh runtime works.
+    second = Runtime()
+    await second.start()
+    try:
+        ev, _ = await second.cmd(lib.BP_CMD_PING)
+        assert ev == lib.BP_EV_PONG
+    finally:
+        await second.close()
+
+
 async def test_dead_sip_thread_fails_pending_and_poisons_process():
     runtime = Runtime()
     await runtime.start()

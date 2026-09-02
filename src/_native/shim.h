@@ -110,6 +110,11 @@
  * Args: a call handle in decimal. A no-op on a call without video. */
 #define BP_CMD_CALL_VIDEO_KEYFRAME 21
 
+/* Report the registered audio driver names, as
+ * {"ausrc":["aumem",...],"auplay":["aumem",...]} on the completion
+ * event — the registries themselves, never module filenames. */
+#define BP_CMD_AUDIO_DRIVERS 22
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */
