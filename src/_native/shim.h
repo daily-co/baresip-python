@@ -127,6 +127,14 @@
  * events; media starts or stops through the usual epoch machinery. */
 #define BP_CMD_CALL_SET_VIDEO_DIR 23
 
+/* Set the SIP instance identifier. Args: a UUID string; the stack wraps
+ * it as +sip.instance="<urn:uuid:...>" on registration Contacts and
+ * advertises the gruu extension. Applies to user agents created
+ * afterwards. The application owns the value — the library never
+ * invents identity. Reports {"error":"instance_id"} when the value
+ * does not fit the stack's field. */
+#define BP_CMD_SET_INSTANCE_ID 24
+
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are
  * testable without network traffic. Harmless if sent in production. */

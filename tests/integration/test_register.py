@@ -43,6 +43,22 @@ async def test_register_and_unregister(runtime):
     await ua.unregister()
 
 
+async def test_register_carries_instance_id(caplog):
+    """The Contact of a REGISTER carries +sip.instance when configured;
+    observed through the SIP trace, which logs the actual wire bytes."""
+    instance = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+    rt = Runtime()
+    await rt.start(Config(instance_id=instance, sip_trace=True))
+    try:
+        with caplog.at_level(logging.DEBUG, logger="baresip.native.sip"):
+            ua = await UserAgent.create(rt, bench_account())
+            await ua.register()
+            await ua.unregister()
+        assert f'+sip.instance="<urn:uuid:{instance}>"' in caplog.text
+    finally:
+        await rt.close()
+
+
 async def test_wrong_password_is_rejected_with_status(runtime):
     """The 401 challenge is consumed by the digest retry; what the
     application sees is the registrar's final verdict on the bad

@@ -222,6 +222,29 @@ def test_config_rejects_non_int_rtp_timeout(value):
         Config(rtp_timeout=value)
 
 
+def test_instance_id_accepts_canonical_uuid():
+    Config(instance_id="0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not-a-uuid",
+        "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0",  # uppercase: not canonical
+        "urn:uuid:0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",  # the stack adds the wrapper
+        "",
+    ],
+)
+def test_instance_id_rejects_non_canonical(value):
+    with pytest.raises(ValueError):
+        Config(instance_id=value)
+
+
+def test_instance_id_rejects_non_str():
+    with pytest.raises(TypeError):
+        Config(instance_id=1234)
+
+
 def test_render_rtp_timeout_golden():
     assert "\nrtp_timeout 60\n" in Config(rtp_timeout=60).render()
 

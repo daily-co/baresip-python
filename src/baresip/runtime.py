@@ -135,11 +135,13 @@ class Runtime:
         """
         sip_trace = False
         expose_headers: tuple[str, ...] = ()
+        instance_id: str | None = None
         audio_drivers: tuple[tuple[str, str, str], ...] = ()
         if isinstance(config, Config):
             self._native_log_level = LOG_LEVELS[config.native_log_level]
             sip_trace = config.sip_trace
             expose_headers = config.expose_headers
+            instance_id = config.instance_id
             # (config field, registry, module) for the startup driver
             # check; raw-text starts skip it — the fields are unknown.
             audio_drivers = (
@@ -203,6 +205,12 @@ class Runtime:
             self._state = "running"
             if audio_drivers:
                 await self._validate_audio_drivers(audio_drivers)
+            # Before any UserAgent exists: the instance id is read when
+            # registration clients are created.
+            if instance_id:
+                _, payload = await self.cmd(lib.BP_CMD_SET_INSTANCE_ID, args=instance_id)
+                if payload is not None:
+                    raise BaresipError(f"instance_id rejected by the stack: {instance_id!r}")
             if expose_headers:
                 await self.cmd(lib.BP_CMD_SET_EXPOSE_HEADERS, args=",".join(expose_headers))
             if sip_trace:

@@ -880,6 +880,18 @@ static void cmd_handler(int id, void *data, void *arg)
         bp_emit(BP_EV_DONE, msg->handle, NULL);
         break;
 
+    case BP_CMD_SET_INSTANCE_ID: {
+        struct config *cfg = conf_config();
+
+        if (!cfg || !msg->json || strlen(msg->json) >= sizeof(cfg->sip.uuid)) {
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"instance_id\"}");
+            break;
+        }
+        str_ncpy(cfg->sip.uuid, msg->json, sizeof(cfg->sip.uuid));
+        bp_emit(BP_EV_DONE, msg->handle, NULL);
+        break;
+    }
+
     case BP_CMD_UA_ALLOC: {
         struct ua *ua = NULL;
         char json[64];

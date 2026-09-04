@@ -15,6 +15,7 @@ mistake was made, instead of surfacing as a protocol failure later.
 """
 
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Literal
 
@@ -185,6 +186,15 @@ class Config:
             default is 4 — it applies only when the runtime is started
             from raw configuration text that leaves ``call_max_calls``
             unset.
+        instance_id: A UUID (canonical lowercase form) identifying this
+            endpoint independent of its network address. Carried on
+            registration Contacts as ``+sip.instance="<urn:uuid:...>"``
+            (RFC 5626/3840): a registrar that supports it replaces a
+            restarted instance's old binding instead of stacking a stale
+            one, and the ``gruu`` extension is advertised. The
+            application owns the value — supply the same one across
+            restarts for a stable identity; the library never invents
+            it. None (the default) sends no instance parameter.
         rtp_timeout: Seconds without received RTP after which a call is
             declared dead and closed (close reason ``"rtp stream
             error"``). RTP normally flows continuously — even silence is
@@ -216,6 +226,7 @@ class Config:
     native_log_level: str = "warning"
     sip_trace: bool = False
     max_concurrent_calls: int | None = 2
+    instance_id: str | None = None
     rtp_timeout: int = 0
     video_source: str | None = None
     video_size: tuple[int, int] = (640, 480)
@@ -262,6 +273,18 @@ class Config:
             if self.max_concurrent_calls < 1:
                 raise ValueError(
                     f"max_concurrent_calls must be >= 1, got {self.max_concurrent_calls}"
+                )
+        if self.instance_id is not None:
+            if not isinstance(self.instance_id, str):
+                raise TypeError(f"instance_id must be a str, got {self.instance_id!r}")
+            try:
+                canonical = str(uuid.UUID(self.instance_id))
+            except ValueError:
+                canonical = None
+            if canonical != self.instance_id:
+                raise ValueError(
+                    f"instance_id must be a canonical lowercase UUID "
+                    f"(e.g. {uuid.uuid4()}), got {self.instance_id!r}"
                 )
         if isinstance(self.rtp_timeout, bool) or not isinstance(self.rtp_timeout, int):
             raise TypeError(f"rtp_timeout must be an int, got {self.rtp_timeout!r}")

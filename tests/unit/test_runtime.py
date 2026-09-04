@@ -87,6 +87,18 @@ async def test_audio_drivers_query_reports_aumem():
         await runtime.close()
 
 
+async def test_instance_id_is_applied_at_start():
+    from baresip import Config
+
+    runtime = Runtime()
+    await runtime.start(Config(instance_id="0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"))
+    try:
+        ev, _ = await runtime.cmd(lib.BP_CMD_PING)
+        assert ev == lib.BP_EV_PONG
+    finally:
+        await runtime.close()
+
+
 async def test_typoed_audio_driver_fails_start_loudly():
     from baresip import Config
 
