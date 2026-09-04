@@ -33,8 +33,8 @@
  * the platform's hardware speaker/mic driver; loading it opens no device.
  */
 static const char *const bp_modules[] = {
-    "g711",      "opus",      "vp8",    "srtp",   "dtls_srtp", "ice",         "stun",
-    "turn",      "aufile",    "ausine", "auconv", "auresamp",  "rtcpsummary",
+    "g711",      "libg722",   "opus",   "vp8",    "srtp",   "dtls_srtp", "ice",
+    "stun",      "turn",      "aufile", "ausine", "auconv", "auresamp",  "rtcpsummary",
 #if defined(__APPLE__)
     "coreaudio", "avcapture",
 #elif defined(__linux__)

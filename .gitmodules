@@ -4,3 +4,6 @@
 [submodule "third_party/baresip"]
 	path = third_party/baresip
 	url = https://github.com/baresip/baresip.git
+[submodule "third_party/libg722"]
+	path = third_party/libg722
+	url = https://github.com/sippy/libg722

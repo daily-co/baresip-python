@@ -44,6 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: explicitly selected. Modules with load-time side effects do not belong here.
 DEFAULT_MODULES: tuple[str, ...] = (
     "g711",
+    "libg722",
     "opus",
     "vp8",
     "srtp",
@@ -276,6 +277,31 @@ def build(
     _run(["cmake", "-B", str(re_build), f"-DCMAKE_INSTALL_PREFIX={prefix}", *common], cwd=re_src)
     _run(["cmake", "--build", str(re_build), "-j", str(jobs)], cwd=re_src)
     _run(["cmake", "--install", str(re_build)], cwd=re_src)
+
+    # --- libg722 (the G.722 codec behind the libg722 module; static,
+    #     installed into the prefix where baresip's FindLIBG722 looks).
+    #     Compiled directly: the project's own cmake globs "g722*.c"
+    #     recursively, which on a case-insensitive filesystem (macOS)
+    #     swallows its Python binding stub and breaks the build; the
+    #     library proper is two translation units. ---
+    g722_src = REPO_ROOT / "third_party" / "libg722"
+    g722_build = g722_src / "build"
+    g722_build.mkdir(exist_ok=True)
+    g722_objs: list[str] = []
+    for src_name in ("g722_decode.c", "g722_encode.c"):
+        obj = g722_build / (src_name + ".o")
+        _run(
+            ["cc", "-c", "-O2", "-fPIC", "-o", str(obj), str(g722_src / src_name)],
+            cwd=g722_src,
+        )
+        g722_objs.append(str(obj))
+    (prefix / "lib").mkdir(parents=True, exist_ok=True)
+    (prefix / "include").mkdir(parents=True, exist_ok=True)
+    g722_a = prefix / "lib" / "libg722.a"
+    g722_a.unlink(missing_ok=True)
+    _run(["ar", "rcs", str(g722_a), *g722_objs], cwd=g722_src)
+    for header in sorted(g722_src.glob("g722*.h")):
+        shutil.copy2(header, prefix / "include" / header.name)
 
     # --- baresip (static, explicit module list) ---
     bs_build = baresip_src / "build"

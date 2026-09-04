@@ -59,7 +59,11 @@ class Account:
             ``register()`` refuses instead of pretending.
         transport: SIP transport toward the domain.
         audio_codecs: Codec preference order, by stack codec name. An empty
-            tuple offers every loaded codec.
+            tuple offers every loaded codec. A bare name implies 8 kHz —
+            codecs registered at other rates need the full
+            ``name/srate/channels`` spec (``"g722/16000/1"``,
+            ``"opus/48000/2"``); a spec that matches nothing is skipped
+            with a native warning.
         dtmf_mode: How DTMF is sent: RTP telephone-events ("rtpevent"),
             SIP INFO ("info"), or per-call automatic selection ("auto").
         auth_user: Digest-authentication username, for services whose

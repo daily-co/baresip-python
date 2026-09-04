@@ -11,7 +11,12 @@ requires-python = ">=3.11"
 license = "BSD-2-Clause"
 # The statically bundled libre/libbaresip are BSD-3; their notices ship in
 # every distribution alongside our own license.
-license-files = ["LICENSE", "third_party/re/LICENSE", "third_party/baresip/LICENSE"]
+license-files = [
+    "LICENSE",
+    "third_party/re/LICENSE",
+    "third_party/baresip/LICENSE",
+    "third_party/libg722/LICENSE",
+]
 keywords = ["sip", "voip", "baresip", "telephony", "rtp"]
 classifiers = [
     "Development Status :: 3 - Alpha",

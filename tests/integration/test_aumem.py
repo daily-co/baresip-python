@@ -139,6 +139,35 @@ async def test_flush_tx_discards_buffered_audio(bench_ua):
     await call.hangup()
 
 
+async def test_g722_negotiates_16khz_and_echoes():
+    """Force G.722: the SDP carries G722 (RTP clock 8000 by RFC quirk),
+    the call runs at 16 kHz both directions, and echo audio survives."""
+    runtime = Runtime()
+    await runtime.start(RAW_CONF)
+    try:
+        ua = await UserAgent.create(
+            runtime,
+            Account(
+                user="1003",
+                password="bench1234",
+                domain=DOMAIN,
+                audio_codecs=("g722/16000/1",),
+            ),
+        )
+        await ua.register()
+        call, info = await dial_ready(ua)
+        assert info.tx_sample_rate == 16000
+        assert info.rx_sample_rate == 16000
+
+        call.audio.write(sine(16000, 1.0))
+        received = await read_for(call, 2.5)
+        assert len(received) >= int(0.8 * 16000) * 2
+        assert peak_window_rms(received, 16000) > TONE_RMS_FLOOR
+        await call.hangup()
+    finally:
+        await runtime.close()
+
+
 async def test_two_calls_carry_independent_audio(bench_ua):
     call_a, info_a = await dial_ready(bench_ua)
     call_b, info_b = await dial_ready(bench_ua)

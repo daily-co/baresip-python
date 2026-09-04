@@ -32,6 +32,8 @@
         <load module="mod_dptools"/>
         <load module="mod_tone_stream"/>
         <load module="mod_sndfile"/>
+        <!-- G.722 (the codec itself lives here, not in the core). -->
+        <load module="mod_spandsp"/>
       </modules>
     </configuration>
 
@@ -138,8 +140,8 @@
             <param name="aggressive-nat-detection" value="true"/>
             <param name="NDLB-force-rport" value="true"/>
             <param name="NDLB-received-in-nat-reg-contact" value="true"/>
-            <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
-            <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="inbound-codec-prefs" value="G722,PCMU,PCMA"/>
+            <param name="outbound-codec-prefs" value="G722,PCMU,PCMA"/>
             <param name="rtp-timer-name" value="soft"/>
             <param name="dtmf-type" value="rfc2833"/>
             <!-- Without an explicit interval sofia sends no RTCP at all;

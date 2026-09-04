@@ -32,6 +32,7 @@ BARESIP_SRC = REPO_ROOT / "third_party" / "baresip"
 
 LIBRE_A = NATIVE_PREFIX / "lib" / "libre.a"
 LIBBARESIP_A = BARESIP_SRC / "build" / "libbaresip.a"
+LIBG722_A = NATIVE_PREFIX / "lib" / "libg722.a"
 
 
 def _brew_lib_dir(formula: str) -> Path | None:
@@ -213,6 +214,7 @@ _library_dirs: list[str] = []
 _extra_link_args = [
     str(LIBBARESIP_A),
     str(LIBRE_A),
+    str(LIBG722_A),
     "-lopus",
     "-lvpx",
     "-lssl",
