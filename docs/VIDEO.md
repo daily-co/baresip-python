@@ -14,6 +14,31 @@ perfectly good audio call — `call.video` operations then raise
 `VideoNotActive`, which is the *typed answer* to "did video happen?",
 not a failure of the call.
 
+## Adding and removing video mid-call
+
+`call.set_video_direction("sendrecv" | "sendonly" | "recvonly" |
+"inactive")` renegotiates the call's video with a re-INVITE;
+`add_video()` and `remove_video()` are the sendrecv/inactive shorthands.
+The one requirement is that the call carries a video stream to
+redirect: dial with `video="inactive"` to negotiate the stream without
+activating it — the call is audio-only on the wire until someone brings
+video up — or start from any `video=True` call. A call dialed with
+`video=False` has no video stream and can never add one.
+
+The peer side needs no special handling: an incoming direction change
+arrives as a normal renegotiation, media starts or stops, and a bound
+`CallVideo` sees `VideoRestarted` once and rebinds — the same epoch
+contract hold/resume exercises. Removing video leaves a working audio
+call, with `call.video` back to raising `VideoNotActive`.
+
+Right after establishment the ACK may still be in flight; a direction
+change then raises with "retry shortly" — wait briefly and call it
+again.
+
+`examples/09_midcall_video.py` runs the whole story as a two-terminal
+demo: caller adds and removes video mid-call, callee accepts with
+nothing but `answer(video=True)`.
+
 ## The frames contract
 
 Frames are **packed I420**: a full-resolution luma plane, then two

@@ -24,6 +24,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from typing import ClassVar
 
 from baresip._native import lib
 from baresip.audio import AudioWarning, CallAudio
@@ -445,6 +446,91 @@ class Call:
                 refused.
         """
         await self._set_hold(False)
+
+    # sdp_dir values, as BP_CMD_CALL_SET_VIDEO_DIR expects them.
+    _VIDEO_DIRECTIONS: ClassVar[dict[str, int]] = {
+        "inactive": 0,
+        "recvonly": 1,
+        "sendonly": 2,
+        "sendrecv": 3,
+    }
+
+    async def set_video_direction(self, direction: str) -> None:
+        """Change the call's video direction with a re-INVITE.
+
+        Brings video up mid-call (``"sendrecv"``) or takes it down again
+        (``"inactive"``) on a call whose video stream was negotiated at
+        setup — dialed with ``video=``, or answered to a video offer. A
+        call dialed with ``video=False`` has no video stream and cannot
+        add one. Media starts and stops through ``call.video`` as usual:
+        the streams are replaced, so a bound
+        :class:`~baresip.video.CallVideo` surfaces
+        :class:`~baresip.errors.VideoRestarted` once and rebinds.
+
+        Args:
+            direction: ``"sendrecv"``, ``"sendonly"``, ``"recvonly"`` or
+                ``"inactive"``.
+
+        Raises:
+            ValueError: not a direction.
+            StaleHandleError: the call is already gone.
+            BaresipError: the call carries no video stream, is not
+                established, or the stack refused (e.g. another session
+                refresh is in flight — retry shortly).
+        """
+        if direction not in self._VIDEO_DIRECTIONS:
+            raise ValueError(
+                f"direction must be one of {sorted(self._VIDEO_DIRECTIONS)}, got {direction!r}"
+            )
+        if self._state is not CallState.ESTABLISHED:
+            raise BaresipError("set_video_direction requires an established call")
+
+        # As with hold, the stack silently skips the re-INVITE (and still
+        # returns 0) while another session refresh is in flight; the one
+        # observable is the CALL_LOCAL_SDP "offer" event. Unlike hold,
+        # nothing is rolled back on a miss — the staged direction is the
+        # desired state, and a retry converges on it.
+        saw_offer = False
+
+        def listener(event: StackEvent) -> None:
+            nonlocal saw_offer
+            if (
+                event.call == self._handle
+                and event.event is Event.CALL_LOCAL_SDP
+                and event.text == "offer"
+            ):
+                saw_offer = True
+
+        self._runtime.subscribe(listener)
+        try:
+            ev, payload = await self._runtime.cmd(
+                lib.BP_CMD_CALL_SET_VIDEO_DIR,
+                args=f"{self._handle} {self._VIDEO_DIRECTIONS[direction]}",
+            )
+        finally:
+            self._runtime.unsubscribe(listener)
+        if ev == lib.BP_EV_STALE_HANDLE:
+            raise StaleHandleError("call no longer exists")
+        if payload is not None:
+            data = json.loads(payload)
+            if data.get("error") == "no_video":
+                raise BaresipError(
+                    "the call carries no video stream — dial with video= to negotiate one"
+                )
+            raise BaresipError(f"set_video_direction failed: {os.strerror(data.get('errno', 0))}")
+        if not saw_offer:
+            raise BaresipError(
+                "video direction staged but not sent: a session refresh is "
+                "already in flight; retry shortly"
+            )
+
+    async def add_video(self) -> None:
+        """Bring video up mid-call; ``set_video_direction("sendrecv")``."""
+        await self.set_video_direction("sendrecv")
+
+    async def remove_video(self) -> None:
+        """Take video down mid-call; ``set_video_direction("inactive")``."""
+        await self.set_video_direction("inactive")
 
     async def _set_hold(self, hold: bool) -> None:
         verb = "hold" if hold else "resume"

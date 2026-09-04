@@ -49,10 +49,13 @@
 #define BP_CMD_CALL_REJECT 10 /* answers 486 Busy Here */
 #define BP_CMD_CALL_HANGUP 11
 
-/* Dial out. Args: first line "HANDLE V URI" (V=1 offers video — VP8,
- * frames through the vidmem driver); each further line is one
- * "Name: value" header for the INVITE. DONE payload: {"handle":N} or
- * {"error":...}. Progress and outcome arrive as stack events. */
+/* Dial out. Args: first line "HANDLE V URI", where V shapes the video
+ * offer: 0 = no video stream at all, 1 = sendrecv (VP8, frames through
+ * the vidmem driver), 2 = a video m-line negotiated inactive (nothing
+ * flows, but BP_CMD_CALL_SET_VIDEO_DIR can activate it mid-call),
+ * 3 = sendonly, 4 = recvonly. Each further line is one "Name: value"
+ * header for the INVITE. DONE payload: {"handle":N} or {"error":...}.
+ * Progress and outcome arrive as stack events. */
 #define BP_CMD_UA_CONNECT 12
 
 /* Send one DTMF key. Args: "HANDLE K" where K is a digit [0-9A-D*#] to
@@ -114,6 +117,15 @@
  * {"ausrc":["aumem",...],"auplay":["aumem",...]} on the completion
  * event — the registries themselves, never module filenames. */
 #define BP_CMD_AUDIO_DRIVERS 22
+
+/* Change the call's video direction mid-call. Args: "HANDLE D" with D an
+ * sdp_dir value (0 inactive, 1 recvonly, 2 sendonly, 3 sendrecv); the
+ * stack applies it and sends the re-INVITE itself. Requires the call to
+ * carry a video stream (dialed with V != 0, or answered to a video
+ * offer) — {"error":"no_video"} otherwise; other failures report
+ * {"error":"video_dir","errno":N}. The peer's answer arrives as stack
+ * events; media starts or stops through the usual epoch machinery. */
+#define BP_CMD_CALL_SET_VIDEO_DIR 23
 
 /* Test-only commands: fixed inputs in, observable events out, so the paths
  * under them — the JSON encoder, the handle table, header extraction — are

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+from typing import ClassVar
 
 from baresip._native import lib
 from baresip.call import Call, CallState, _parse_refer_to
@@ -210,7 +211,19 @@ class UserAgent:
         self._registered = False
         logger.info("unregistered", extra={"ua": self._handle})
 
-    async def dial(self, uri: str, headers: dict | None = None, *, video: bool = False) -> Call:
+    # The wire encoding of dial's video argument; see BP_CMD_UA_CONNECT.
+    _VIDEO_DIRS: ClassVar[dict[bool | str, int]] = {
+        False: 0,
+        True: 1,
+        "sendrecv": 1,
+        "inactive": 2,
+        "sendonly": 3,
+        "recvonly": 4,
+    }
+
+    async def dial(
+        self, uri: str, headers: dict | None = None, *, video: bool | str = False
+    ) -> Call:
         """Start an outbound call.
 
         Returns as soon as the INVITE is on its way — await
@@ -226,6 +239,13 @@ class UserAgent:
             uri: The SIP URI to call (e.g. ``"sip:9196@example.com"``).
             headers: Extra headers for the INVITE, name to value.
             video: Offer video (VP8); frames flow via ``call.video``.
+                ``True`` offers sendrecv; a string offers a specific
+                direction — ``"inactive"`` negotiates the video stream
+                without activating it, so
+                :meth:`Call.set_video_direction
+                <baresip.call.Call.set_video_direction>` can bring video
+                up mid-call. ``False`` (the default) dials with no video
+                stream at all — such a call can never add video later.
 
         Returns:
             The call, in :attr:`~baresip.call.CallState.OUTGOING` state.
@@ -240,9 +260,14 @@ class UserAgent:
         """
         if not uri or any(c in uri for c in "\r\n"):
             raise ValueError("uri must be non-empty and single-line")
+        if video not in self._VIDEO_DIRS:
+            raise ValueError(
+                f"video must be a bool or one of "
+                f"{sorted(k for k in self._VIDEO_DIRS if isinstance(k, str))}, got {video!r}"
+            )
         if self._runtime.draining:
             raise DrainingError("runtime is draining; new calls are refused")
-        args = f"{self._handle} {int(video)} {uri}"
+        args = f"{self._handle} {self._VIDEO_DIRS[video]} {uri}"
         for name, value in (headers or {}).items():
             if not name or any(c in name for c in "\r\n: "):
                 raise ValueError(f"invalid header name {name!r}")

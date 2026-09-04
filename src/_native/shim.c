@@ -997,7 +997,7 @@ static void cmd_handler(int id, void *data, void *arg)
     case BP_CMD_UA_CONNECT: {
         char *end = NULL;
         uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
-        bool video = end ? strtol(end, &end, 10) : false;
+        unsigned long video = end ? strtoul(end, &end, 10) : 0;
         struct ua *ua = handle_lookup(h, BP_OBJ_UA);
         char json[64];
 
@@ -1063,8 +1063,15 @@ static void cmd_handler(int id, void *data, void *arg)
         if (!list_isempty(&hdrs))
             ua_set_custom_hdrs(ua, &hdrs);
 
+        /* V maps to (vidmode, video direction); see shim.h. 0 dials with
+         * no video stream, everything else negotiates one in the given
+         * direction — ua_connect itself is ua_connect_dir(sendrecv). */
+        static const enum sdp_dir vdirs[] = {SDP_SENDRECV, SDP_SENDRECV, SDP_INACTIVE, SDP_SENDONLY,
+                                             SDP_RECVONLY};
+        enum sdp_dir vdir = video < RE_ARRAY_SIZE(vdirs) ? vdirs[video] : SDP_SENDRECV;
         struct call *call = NULL;
-        int cerr = ua_connect(ua, &call, NULL, uri, video ? VIDMODE_ON : VIDMODE_OFF);
+        int cerr = ua_connect_dir(ua, &call, NULL, uri, video ? VIDMODE_ON : VIDMODE_OFF,
+                                  SDP_SENDRECV, vdir);
 
         if (!list_isempty(&hdrs)) {
             ua_set_custom_hdrs(ua, NULL);
@@ -1249,6 +1256,34 @@ static void cmd_handler(int id, void *data, void *arg)
 
         re_snprintf(json, sizeof(json), "{\"calls\":%u}", uag_call_count());
         bp_emit(BP_EV_DONE, msg->handle, json);
+        break;
+    }
+
+    case BP_CMD_CALL_SET_VIDEO_DIR: {
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        unsigned long dir = end ? strtoul(end, NULL, 10) : 0;
+        struct call *call = handle_lookup(h, BP_OBJ_CALL);
+        char json[64];
+
+        if (!call) {
+            bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        /* Without a video stream (dialed with V=0) there is nothing to
+         * redirect — call_set_video_dir would re-INVITE with no video
+         * m-line and report success. */
+        if (!call_video(call)) {
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"no_video\"}");
+            break;
+        }
+        int cerr = dir > SDP_SENDRECV ? EINVAL : call_set_video_dir(call, (enum sdp_dir)dir);
+
+        if (cerr) {
+            re_snprintf(json, sizeof(json), "{\"error\":\"video_dir\",\"errno\":%d}", cerr);
+            bp_emit(BP_EV_DONE, msg->handle, json);
+        } else
+            bp_emit(BP_EV_DONE, msg->handle, NULL);
         break;
     }
 

@@ -391,6 +391,8 @@ static int vsrc_alloc(struct vidsrc_st **stp, const struct vidsrc *vs, struct vi
      * thread, nothing pushed. */
     if (dev && dev[0] == 'h')
         handle = (uint32_t)strtoul(dev + 1, NULL, 10);
+    debug("vidmem: source alloc dev='%s' %ux%u -> %s\n", dev ? dev : "", size->w, size->h,
+          (handle && size->w && size->h && prm->fps > 0.0) ? "live" : "inert");
     if (!handle || !size->w || !size->h || !(prm->fps > 0.0))
         goto out; /* inert */
 
@@ -749,18 +751,30 @@ void bp_vidmem_call_established(struct call *call)
     v = call_video(call);
     if (!v)
         return;
-    m = stream_sdpmedia(video_strm(v));
-    if (!m || !(sdp_media_dir(m) & SDP_SENDONLY))
-        return;
     handle = bp_call_handle_find(call);
     if (!handle)
         return;
 
+    /* Pin the device name for every call that carries a video stream —
+     * inactive-video calls included: a source allocated later (mid-call
+     * video add, hold/resume re-alloc) is then born under the handle
+     * and correlates itself, no swap needed. */
     re_snprintf(dev, sizeof(dev), "h%u", handle);
-    /* Pin the device name first so any later config-driven re-alloc
-     * (hold/resume renegotiation restarts the source) keeps the handle;
-     * then swap the live instance. */
     video_set_devicename(v, dev, "default");
+
+    /* A source already running — the call established with video —
+     * was allocated under the config-default name (inert) and must be
+     * swapped for a live instance. Swap only when video is actually
+     * negotiated: an answerer whose offer carried no video m-line reads
+     * sendrecv from its local direction here, and a premature
+     * video_set_source would allocate a zero-size source whose mere
+     * existence blocks every later video_start_source. */
+    m = stream_sdpmedia(video_strm(v));
+    debug("vidmem: pinned call h%u, sdp dir %d\n", handle, m ? (int)sdp_media_dir(m) : -1);
+    if (!m || sdp_media_disabled(m) || !sdp_media_rformat(m, NULL))
+        return;
+    if (!(sdp_media_dir(m) & SDP_SENDONLY))
+        return;
     if (video_set_source(v, "vidmem", dev))
         warning("vidmem: video_set_source failed for call h%u\n", handle);
 }

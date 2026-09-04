@@ -51,6 +51,12 @@ async def test_create_accepts_a_raw_aor(runtime):
     assert ua.handle
 
 
+async def test_dial_rejects_unknown_video_direction(runtime):
+    ua = await UserAgent.create(runtime, ACCOUNT)
+    with pytest.raises(ValueError, match="video must be"):
+        await ua.dial("sip:bob@example.invalid", video="both-ways")
+
+
 async def test_create_rejects_garbage(runtime):
     with pytest.raises(BaresipError, match="allocation failed"):
         await UserAgent.create(runtime, "this is not an AOR")
