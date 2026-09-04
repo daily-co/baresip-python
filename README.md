@@ -4,7 +4,7 @@ Python bindings for the [baresip](https://github.com/baresip/baresip) SIP stack 
 embeddable SIP user agent for Python applications: registration, inbound and outbound calls,
 programmatic PCM audio and VP8 video access, and DTMF, with an asyncio-native API.
 
-> **Status: alpha, under active development.** Current release: `v0.3.0a1` on PyPI.
+> **Status: alpha, under active development.** Current release: `v0.4.0a1` on PyPI.
 > The API may still change between pre-releases; every break is called out in the
 > CHANGELOG.
 
@@ -223,7 +223,8 @@ version with a `DeprecationWarning` before removal. The package is fully typed (
 
 BSD 2-Clause. Copyright (c) 2026, Daily. Bundled third-party components (libre, libbaresip)
 are BSD-3-Clause; their notices ship with every distribution. Built wheels additionally
-bundle [OpenSSL](https://openssl-library.org/), [libopus](https://opus-codec.org/), and
-[libvpx](https://www.webmproject.org/) — and, on Linux, ALSA's
+bundle [OpenSSL](https://openssl-library.org/), [libopus](https://opus-codec.org/),
+[libvpx](https://www.webmproject.org/), and
+[libg722](https://github.com/sippy/libg722) — and, on Linux, ALSA's
 [libasound](https://www.alsa-project.org/) — under their respective licenses; see
 [docs/UPGRADING.md](docs/UPGRADING.md) for how security releases in those propagate here.

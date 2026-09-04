@@ -4,6 +4,57 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [0.4.0a1] - 2026-09-04
+
+Mid-call video, wideband audio, and operational hardening: video can now start
+and stop inside a running call, G.722 joins the bundled codecs, and interrupted
+playback, vanished peers, and typo'd configuration all fail fast instead of
+silently.
+
+### Added
+
+- Mid-call video add and remove: `call.set_video_direction("sendrecv" |
+  "sendonly" | "recvonly" | "inactive")` renegotiates the call's video with a
+  re-INVITE, with `add_video()` / `remove_video()` shorthands. `dial(...,
+  video=...)` now also takes a direction string — `video="inactive"` negotiates
+  the video stream without activating it, so video can be brought up later
+  (a call dialed with `video=False` still has no video stream and cannot add
+  one). The accepting side needs nothing beyond `answer(video=True)`: an
+  incoming mid-call video offer is auto-accepted and frames simply start
+  flowing. `examples/09_midcall_video.py` runs the whole story as a
+  two-terminal demo; the mid-call section in `docs/VIDEO.md` has the details,
+  including the "retry shortly" timing right after establishment.
+- G.722 wideband audio (16 kHz) in the default build, via the bundled
+  permissively-licensed [libg722](https://github.com/sippy/libg722). Select it
+  with the full spec — `Account(audio_codecs=("g722/16000/1",))` — since a bare
+  codec name implies 8 kHz. The bench FreeSWITCH now negotiates it too.
+- `CallAudio.flush_tx()`: discard PCM that is written but not yet transmitted —
+  the transmit thread drains the buffer on its next tick, so at most one frame
+  (~20 ms) can still reach the wire. Built for interruptions: stop writing,
+  flush, resume with the new audio. Discarded bytes are counted in the new
+  `AudioStats.tx_flushed_bytes`.
+- `Config.rtp_timeout`: seconds without received RTP after which a call is
+  declared dead and closed (reason `"rtp stream error"`) — catches peers that
+  vanish without a BYE. Direction-aware (held and send-only streams are not
+  checked); 0, the default, disables detection.
+- `Config.instance_id`: a caller-supplied UUID carried on registration Contacts
+  as `+sip.instance="<urn:uuid:...>"` (RFC 5626/3840), with the `gruu`
+  extension advertised — a registrar that supports it replaces a restarted
+  instance's old binding instead of stacking a stale one.
+- Startup validation of the configured audio drivers: a typo like
+  `Config(audio_driver="aumen")` now fails `start()` loudly, naming the field
+  and the registered drivers, instead of surfacing when the first call fails to
+  allocate audio.
+- cp314 wheels: Python 3.14 joins the build matrix.
+
+### Known issues
+
+- The two 0.2.0a1 leaks remain open: ~2 KiB retained per runtime start/close
+  cycle ([#1](https://github.com/daily-co/baresip-python/issues/1)), and
+  `close()` during a live call leaking that call's native object graph
+  ([#2](https://github.com/daily-co/baresip-python/issues/2)) — hang up or
+  `drain()` first.
+
 ## [0.3.0a1] - 2026-08-28
 
 The video release: VP8 calls with programmatic frames, camera capture on both
