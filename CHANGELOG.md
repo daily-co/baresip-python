@@ -4,6 +4,22 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [0.4.1a1] - 2026-09-05
+
+A point release for embedders: `Config` can now express a pinned network
+interface, so configurations that previously required raw text can use a
+`Config` object — and with it the features `Runtime.start()` applies only on
+that path (`expose_headers`, `instance_id`, `sip_trace`, the log level).
+
+### Added
+
+- `Config.net_interface`: the network interface name or local address the
+  stack binds and routes from (e.g. `"127.0.0.1"`, `"eth0"`). None keeps
+  normal interface discovery, which deliberately skips loopback — so
+  loopback-only setups pin it. Previously this was only expressible as a raw
+  `net_interface` configuration line, which forced the raw-text start path
+  and silently dropped every command-applied `Config` feature.
+
 ## [0.4.0a1] - 2026-09-04
 
 Mid-call video, wideband audio, and operational hardening: video can now start
