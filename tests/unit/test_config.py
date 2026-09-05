@@ -193,6 +193,9 @@ def test_render_bare_override_gets_a_device_too():
         {"expose_headers": ("",)},
         {"native_log_level": "verbose"},
         {"max_concurrent_calls": 0},
+        {"net_interface": ""},
+        {"net_interface": "eth0\nsip_listen 0.0.0.0:5060"},  # line injection
+        {"net_interface": "eth 0"},
         {"rtp_timeout": -1},
         {"video_source": ""},
         {"video_source": "a" * 16},
@@ -220,6 +223,14 @@ def test_config_rejects_non_int_call_limit(value):
 def test_config_rejects_non_int_rtp_timeout(value):
     with pytest.raises(TypeError):
         Config(rtp_timeout=value)
+
+
+def test_render_net_interface_golden():
+    assert Config(net_interface="127.0.0.1").render().startswith("net_interface 127.0.0.1\n")
+
+
+def test_render_no_net_interface_omits_the_key():
+    assert "net_interface" not in Config().render()
 
 
 def test_instance_id_accepts_canonical_uuid():

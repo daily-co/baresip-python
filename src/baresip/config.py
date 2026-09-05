@@ -159,6 +159,11 @@ class Config:
     native log level, the SIP trace switch.
 
     Parameters:
+        net_interface: Network interface name or local address the stack
+            binds and routes from (e.g. ``"eth0"``, ``"127.0.0.1"``).
+            None (the default) uses normal interface discovery — which
+            deliberately skips loopback, so loopback-only setups (a
+            local bench, two instances on one machine) must pin it.
         audio_driver: Audio driver as "module" or "module,device"; used
             for both capture and playback unless a direction is overridden
             below. What "device" means is the module's own affair: a sound
@@ -223,6 +228,7 @@ class Config:
         video_bitrate: VP8 encoder target, in bits per second.
     """
 
+    net_interface: str | None = None
     audio_driver: str = "aumem"
     audio_source: str | None = None
     audio_player: str | None = None
@@ -238,6 +244,10 @@ class Config:
     video_bitrate: int = 1_000_000
 
     def __post_init__(self):
+        if self.net_interface is not None:
+            if not self.net_interface:
+                raise ValueError("net_interface must not be empty; use None for discovery")
+            _reject_chars("net_interface", self.net_interface)
         if not self.audio_driver:
             raise ValueError("audio_driver must not be empty")
         for field in ("audio_driver", "audio_source", "audio_player", "video_source"):
@@ -328,7 +338,9 @@ class Config:
         # Only when enabled: the stack's compiled default is already
         # 0 (detection off), so an absent key changes nothing.
         timeout = f"rtp_timeout {self.rtp_timeout}\n" if self.rtp_timeout else ""
+        iface = f"net_interface {self.net_interface}\n" if self.net_interface else ""
         return (
+            f"{iface}"
             f"audio_source {source}\n"
             f"audio_player {player}\n"
             f"call_max_calls {limit}\n"
