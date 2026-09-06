@@ -4,7 +4,7 @@ Python bindings for the [baresip](https://github.com/baresip/baresip) SIP stack 
 embeddable SIP user agent for Python applications: registration, inbound and outbound calls,
 programmatic PCM audio and VP8 video access, and DTMF, with an asyncio-native API.
 
-> **Status: alpha, under active development.** Current release: `v0.4.1a1` on PyPI.
+> **Status: alpha, under active development.** Current release: `v0.5.0a1` on PyPI.
 > The API may still change between pre-releases; every break is called out in the
 > CHANGELOG.
 
