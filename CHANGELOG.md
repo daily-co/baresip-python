@@ -4,6 +4,24 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [Unreleased]
+
+### Added
+
+- `Config.extra_config_text`: raw configuration lines appended verbatim after
+  the rendered fields — the escape hatch to stack directives the typed fields
+  don't model (`sip_listen`, module tuning), now travelling *inside* the
+  `Config` object so the command-applied settings (`expose_headers`,
+  `instance_id`, `sip_trace`, the log level) are never lost with it.
+
+### Changed
+
+- **BREAKING**: `Runtime.start()` no longer accepts raw configuration text —
+  it takes a `Config` (or None for the stack's defaults) and raises
+  `TypeError` otherwise. A raw-text start physically cannot carry the
+  command-applied settings above and dropped them silently; anything the
+  typed fields don't model goes in `Config(extra_config_text=...)`.
+
 ## [0.4.1a1] - 2026-09-05
 
 A point release for embedders: `Config` can now express a pinned network

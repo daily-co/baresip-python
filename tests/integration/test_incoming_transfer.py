@@ -28,7 +28,7 @@ native = pytest.importorskip("baresip._native")
 
 from test_telephony_gates import fs_cli
 
-from baresip import Account, BaresipError, StaleHandleError, TransferFailed
+from baresip import Account, BaresipError, Config, StaleHandleError, TransferFailed
 from baresip.call import CallState
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -47,8 +47,13 @@ async def runtime(tmp_path):
     own = f"127.0.0.1:{next(_PORTS)}"
     rt = Runtime()
     await rt.start(
-        f"net_interface 127.0.0.1\nsip_listen {own}\n"
-        f"audio_source ausine,440\naudio_player aufile,{tmp_path}/rx.wav\n"
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            audio_source="ausine,440",
+            audio_player=f"aufile,{tmp_path}/rx.wav",
+            extra_config_text=f"sip_listen {own}\n",
+        )
     )
     try:
         yield rt, own

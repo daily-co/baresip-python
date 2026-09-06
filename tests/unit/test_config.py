@@ -233,6 +233,20 @@ def test_render_no_net_interface_omits_the_key():
     assert "net_interface" not in Config().render()
 
 
+def test_render_extra_config_text_appended_with_newline():
+    rendered = Config(extra_config_text="sip_listen 127.0.0.1:5080").render()
+    assert rendered.endswith("sip_listen 127.0.0.1:5080\n")
+
+
+def test_render_extra_config_text_absent_by_default():
+    assert Config().render() == Config(extra_config_text="").render()
+
+
+def test_config_rejects_non_str_extra_config_text():
+    with pytest.raises(TypeError):
+        Config(extra_config_text=42)
+
+
 def test_instance_id_accepts_canonical_uuid():
     Config(instance_id="0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
 

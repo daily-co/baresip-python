@@ -27,6 +27,7 @@ from baresip import (
     AudioRestarted,
     BaresipError,
     CallState,
+    Config,
     Runtime,
     UserAgent,
 )
@@ -39,9 +40,10 @@ IO_ROUNDS = 150
 HOLD_CYCLES = 200
 CHECK_EVERY = 25
 OWN = "127.0.0.1:5082"
-CONF = (
-    f"net_interface 127.0.0.1\nsip_listen {OWN}\n"
-    "audio_source aumem,default\naudio_player aumem,default\n"
+CONF = Config(
+    net_interface="127.0.0.1",
+    max_concurrent_calls=None,
+    extra_config_text=f"sip_listen {OWN}\n",
 )
 
 AUDIO_GONE = (AudioNotActive, AudioRestarted)

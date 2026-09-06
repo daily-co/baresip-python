@@ -176,20 +176,18 @@ async def main():
     # declined video stream) — without this they are invisible.
     logging.basicConfig(level=logging.DEBUG, format="%(name)s: %(message)s")
     runtime = Runtime()
-    conf = Config(
-        audio_driver=AUDIO, video_source=SOURCE, video_size=(W, H), video_fps=15.0
-    ).render()
 
     def loopback(hostport: str) -> bool:
         host = hostport.rsplit(":", 1)[0]
         return host.startswith("127.") or host == "localhost"
 
     domain = DOMAIN
+    extra = ""
     if LISTEN:
         # Direct mode: no registrar. The account exists for the URI
         # identity only; peers reach us at SIP_LISTEN.
         domain = LISTEN.replace("0.0.0.0", "127.0.0.1")
-        conf = f"sip_listen {LISTEN}\n" + conf
+        extra = f"sip_listen {LISTEN}\n"
     # The stack skips loopback in interface discovery unless pinned, so
     # loopback-bound traffic needs the pin — but pinning with a real
     # peer would leave no route out at all. Pin only when everything in
@@ -200,10 +198,15 @@ async def main():
         pin = loopback(LISTEN) and (DIAL is None or "@127." in DIAL or "127." in DIAL)
     else:
         pin = loopback(domain)
-    if pin:
-        conf = "net_interface 127.0.0.1\n" + conf
-
-    print(f"******* final config:\n{conf}\n*******\n", flush=True)
+    conf = Config(
+        net_interface="127.0.0.1" if pin else None,
+        audio_driver=AUDIO,
+        video_source=SOURCE,
+        video_size=(W, H),
+        video_fps=15.0,
+        extra_config_text=extra,
+    )
+    print(f"******* final config:\n{conf.render()}\n*******\n", flush=True)
     await runtime.start(conf)
     try:
         ua = await UserAgent.create(

@@ -25,7 +25,7 @@ from baresip.runtime import Runtime  # imports the extension, hence after the sk
 
 # An address the stack cannot listen on: enough to fail ua_init, which is
 # the last step of bringing it up.
-UNUSABLE_CONFIG = "sip_listen 999.999.999.999:5060"
+UNUSABLE_CONFIG = Config(extra_config_text="sip_listen 999.999.999.999:5060")
 
 
 @contextlib.contextmanager
@@ -90,7 +90,7 @@ async def test_unusable_config_is_rejected_and_leaves_the_process_usable():
     assert failed._conf_dir is None, "the private directory outlived the failed start"
 
     runtime = Runtime()
-    await runtime.start("")  # says nothing about sip_listen
+    await runtime.start()  # says nothing about sip_listen
     try:
         ev, _ = await runtime.cmd(lib.BP_CMD_PING)
         assert ev == lib.BP_EV_PONG

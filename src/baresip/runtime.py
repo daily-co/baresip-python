@@ -123,16 +123,29 @@ class Runtime:
 
     # -- lifecycle -----------------------------------------------------------
 
-    async def start(self, config: Config | str = _DEFAULT_CONFIG) -> None:
+    async def start(self, config: Config | None = None) -> None:
         """Start the SIP thread and wait for it to become ready.
 
         Args:
-            config: A :class:`Config`, or raw configuration text in the
-                stack's own ``key value`` line format. A Config's
-                ``native_log_level`` overrides the constructor's and is
-                active from the stack's first line; its ``sip_trace``
-                switch is applied once the stack is up.
+            config: A :class:`Config` (None starts with the stack's own
+                defaults). Its ``native_log_level`` overrides the
+                constructor's and is active from the stack's first line;
+                its ``sip_trace`` switch is applied once the stack is up;
+                directives the Config fields don't model travel in
+                ``extra_config_text``. Raw configuration text is not
+                accepted — it cannot carry the settings applied outside
+                the configuration parser (``expose_headers``,
+                ``instance_id``, ``sip_trace``, the log level), which a
+                text start would silently drop.
+
+        Raises:
+            TypeError: ``config`` is not a Config (raw text included).
         """
+        if config is not None and not isinstance(config, Config):
+            raise TypeError(
+                "start() takes a Config object; raw configuration text is not "
+                "accepted — put extra directives in Config(extra_config_text=...)"
+            )
         sip_trace = False
         expose_headers: tuple[str, ...] = ()
         instance_id: str | None = None

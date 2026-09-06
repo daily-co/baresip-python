@@ -27,7 +27,7 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from baresip import Account
+from baresip import Account, Config
 from baresip.call import CallState
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -35,7 +35,7 @@ from baresip.ua import UserAgent
 pytestmark = [pytest.mark.bench, pytest.mark.soak]
 
 DOMAIN = f"127.0.0.1:{os.environ.get('BENCH_SIP_PORT', '15060')}"
-RAW_CONF = "net_interface 127.0.0.1\naudio_source aumem,default\naudio_player aumem,default\n"
+RAW_CONF = Config(net_interface="127.0.0.1", max_concurrent_calls=None)
 
 SOAK_SECONDS = 600
 

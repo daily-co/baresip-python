@@ -87,6 +87,16 @@ async def test_audio_drivers_query_reports_aumem():
         await runtime.close()
 
 
+async def test_raw_text_start_is_rejected():
+    runtime = Runtime()
+    with pytest.raises(TypeError, match="extra_config_text"):
+        await runtime.start("# raw\n")
+    # The refusal happens before anything starts; the runtime is unused.
+    second = Runtime()
+    await second.start()
+    await second.close()
+
+
 async def test_instance_id_is_applied_at_start():
     from baresip import Config
 

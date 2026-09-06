@@ -28,7 +28,7 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from baresip import Account, Event
+from baresip import Account, Config, Event
 from baresip.call import CallState
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -139,7 +139,12 @@ async def bench_paths():
 
     runtime = Runtime()
     await runtime.start(
-        f"net_interface 127.0.0.1\naudio_source aufile,{greeting}\naudio_player aufile,{recording}\n"
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            audio_source=f"aufile,{greeting}",
+            audio_player=f"aufile,{recording}",
+        )
     )
     ua = await UserAgent.create(runtime, Account(user="1003", password="bench1234", domain=DOMAIN))
     await ua.register()

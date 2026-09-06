@@ -19,7 +19,7 @@ import asyncio
 import pytest
 from torture_helpers import Bounds, drain_loop, expect_call_slots_empty, scaled
 
-from baresip import Account, CallState, Runtime, UserAgent
+from baresip import Account, CallState, Config, Runtime, UserAgent
 
 native = pytest.importorskip("baresip._native")
 
@@ -40,8 +40,12 @@ async def wait_closed(call, timeout: float = 5.0) -> None:
 async def test_t3_call_storm(rng):
     runtime = Runtime()
     await runtime.start(
-        f"net_interface 127.0.0.1\nsip_listen {OWN}\n"
-        "audio_source ausine,440\naudio_player aumem,default\n"
+        Config(
+            net_interface="127.0.0.1",
+            audio_source="ausine,440",
+            max_concurrent_calls=None,
+            extra_config_text=f"sip_listen {OWN}\n",
+        )
     )
     try:
         ua_a = await UserAgent.create(

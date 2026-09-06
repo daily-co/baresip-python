@@ -24,14 +24,14 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from baresip import Account, Event
+from baresip import Account, Config, Event
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
 
 pytestmark = pytest.mark.bench
 
 DOMAIN = f"127.0.0.1:{os.environ.get('BENCH_SIP_PORT', '15060')}"
-RAW_CONF = "net_interface 127.0.0.1\naudio_source aumem,default\naudio_player aumem,default\n"
+RAW_CONF = Config(net_interface="127.0.0.1", max_concurrent_calls=None)
 CALL_SECONDS = 8  # long enough for at least one RTCP exchange
 
 

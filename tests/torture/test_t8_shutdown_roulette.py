@@ -35,7 +35,7 @@ CHILD_TIMEOUT = 30
 CHILD = """
 import asyncio, os, random, threading, time
 
-from baresip import Account, AudioNotActive, AudioRestarted, Runtime, UserAgent
+from baresip import Account, AudioNotActive, AudioRestarted, Config, Runtime, UserAgent
 from baresip._native import lib
 
 rng = random.Random(int(os.environ["T8_SEED"]))
@@ -61,8 +61,11 @@ def swallow(fut):
 async def main():
     runtime = Runtime()
     await runtime.start(
-        f"net_interface 127.0.0.1\\nsip_listen {OWN}\\n"
-        "audio_source aumem,default\\naudio_player aumem,default\\n"
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            extra_config_text=f"sip_listen {OWN}\\n",
+        )
     )
 
     roll = rng.random()

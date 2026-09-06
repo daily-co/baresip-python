@@ -141,11 +141,15 @@ async def report_frames(call):
 
 async def main():
     logging.basicConfig(level=logging.WARNING, format="%(name)s: %(message)s")
-    conf = Config(video_size=(W, H), video_fps=15.0).render()
     domain = DOMAIN
     if LISTEN:
         domain = LISTEN
-        conf = f"sip_listen {LISTEN}\nnet_interface 127.0.0.1\n" + conf
+    conf = Config(
+        net_interface="127.0.0.1" if LISTEN else None,
+        video_size=(W, H),
+        video_fps=15.0,
+        extra_config_text=f"sip_listen {LISTEN}\n" if LISTEN else "",
+    )
 
     runtime = Runtime()
     await runtime.start(conf)

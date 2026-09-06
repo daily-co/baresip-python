@@ -226,6 +226,12 @@ class Config:
             Applies only to calls made or answered with ``video=True``.
         video_fps: Transmit frame pacing in frames per second.
         video_bitrate: VP8 encoder target, in bits per second.
+        extra_config_text: Raw configuration lines in the stack's own
+            ``key value`` format, appended verbatim after the rendered
+            fields — the escape hatch to stack directives the fields
+            above don't model (``sip_listen``, module tuning). Unknown
+            keys are silently ignored by the stack's parser, so a typo
+            here fails quietly; prefer a real field when one exists.
     """
 
     net_interface: str | None = None
@@ -242,6 +248,7 @@ class Config:
     video_size: tuple[int, int] = (640, 480)
     video_fps: float = 30.0
     video_bitrate: int = 1_000_000
+    extra_config_text: str = ""
 
     def __post_init__(self):
         if self.net_interface is not None:
@@ -300,6 +307,8 @@ class Config:
                     f"instance_id must be a canonical lowercase UUID "
                     f"(e.g. {uuid.uuid4()}), got {self.instance_id!r}"
                 )
+        if not isinstance(self.extra_config_text, str):
+            raise TypeError(f"extra_config_text must be a str, got {self.extra_config_text!r}")
         if isinstance(self.rtp_timeout, bool) or not isinstance(self.rtp_timeout, int):
             raise TypeError(f"rtp_timeout must be an int, got {self.rtp_timeout!r}")
         if self.rtp_timeout < 0:
@@ -339,6 +348,9 @@ class Config:
         # 0 (detection off), so an absent key changes nothing.
         timeout = f"rtp_timeout {self.rtp_timeout}\n" if self.rtp_timeout else ""
         iface = f"net_interface {self.net_interface}\n" if self.net_interface else ""
+        extra = self.extra_config_text
+        if extra and not extra.endswith("\n"):
+            extra += "\n"
         return (
             f"{iface}"
             f"audio_source {source}\n"
@@ -353,4 +365,5 @@ class Config:
             f'video_size "{w}x{h}"\n'
             f"video_fps {self.video_fps:g}\n"
             f"video_bitrate {self.video_bitrate}\n"
+            f"{extra}"
         )

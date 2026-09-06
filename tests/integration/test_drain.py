@@ -22,7 +22,7 @@ native = pytest.importorskip("baresip._native")
 
 from test_telephony_gates import fs_cli
 
-from baresip import Account, DrainingError, Event
+from baresip import Account, Config, DrainingError, Event
 from baresip.call import CallState
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -32,10 +32,12 @@ pytestmark = pytest.mark.bench
 DOMAIN = f"127.0.0.1:{os.environ.get('BENCH_SIP_PORT', '15060')}"
 
 
-def config_text(tmp_path, limit: int) -> str:
-    return (
-        f"net_interface 127.0.0.1\ncall_max_calls {limit}\n"
-        f"audio_source ausine,440\naudio_player aufile,{tmp_path}/rx.wav\n"
+def config_text(tmp_path, limit: int) -> Config:
+    return Config(
+        net_interface="127.0.0.1",
+        max_concurrent_calls=limit or None,
+        audio_source="ausine,440",
+        audio_player=f"aufile,{tmp_path}/rx.wav",
     )
 
 

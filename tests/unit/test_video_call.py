@@ -48,8 +48,13 @@ async def pair():
     own = f"127.0.0.1:{next(_PORTS)}"
     runtime = Runtime()
     await runtime.start(
-        f"net_interface 127.0.0.1\nsip_listen {own}\n"
-        + Config(video_size=(W, H), video_fps=15.0, video_bitrate=256_000).render()
+        Config(
+            net_interface="127.0.0.1",
+            video_size=(W, H),
+            video_fps=15.0,
+            video_bitrate=256_000,
+            extra_config_text=f"sip_listen {own}\n",
+        )
     )
     ua_a = await UserAgent.create(
         runtime, Account(user="alice", password="", domain=own, reg_interval=0)

@@ -18,6 +18,7 @@ native = pytest.importorskip("baresip._native")
 from baresip import (
     Account,
     BaresipError,
+    Config,
     NoLocalAddressError,
     RegistrationError,
     StaleHandleError,
@@ -133,9 +134,7 @@ async def test_dial_loopback_works_when_pinned():
     """The same dial goes through once net_interface names loopback (no
     answer expected — dial() only needs the INVITE to leave)."""
     rt = Runtime()
-    await rt.start(
-        "net_interface 127.0.0.1\naudio_source aumem,default\naudio_player aumem,default\n"
-    )
+    await rt.start(Config(net_interface="127.0.0.1", max_concurrent_calls=None))
     try:
         ua = await UserAgent.create(rt, ACCOUNT)
         call = await ua.dial("sip:9196@127.0.0.1:59999")
