@@ -1542,6 +1542,13 @@ static void loop_unwind(enum bp_stage stage)
          * handle slots. Our references go first, so ua_close can actually
          * free what it tears down. */
         handle_drain();
+        /* A close with live calls: their SIP teardown is asynchronous
+         * work the stopped loop will never run. ua_stop_all(true) is
+         * upstream's forced shutdown — terminate the calls, close every
+         * session and abort pending transactions — so the derefs below
+         * free the graph instead of orphaning a reference cycle
+         * (issue #2). */
+        ua_stop_all(true);
         ua_close();
         module_app_unload();
         /* After ua_close: every aumem/vidmem stream instance died with

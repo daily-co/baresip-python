@@ -211,6 +211,16 @@ async def test_add_video_needs_a_negotiated_stream(pair):
     await a_call.hangup()
 
 
+async def test_close_with_live_calls_is_leak_clean(pair):
+    """Issue #2 regression: no hangup here, so the fixture's teardown
+    closes the runtime while both legs are still established. The forced
+    shutdown must free the call graph — enforced at full LSan strictness
+    by the Linux sanitize lane at process exit."""
+    a_call, b_call = await pair(video=False)
+    assert a_call.state is CallState.ESTABLISHED
+    assert b_call.state is CallState.ESTABLISHED
+
+
 async def test_keyframe_request_is_harmless(pair):
     a_call, b_call = await pair()
     await wait_video_up(a_call)

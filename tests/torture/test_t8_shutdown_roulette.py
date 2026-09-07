@@ -131,12 +131,10 @@ def test_t8_shutdown_roulette(rng):
         if "ASAN_OPTIONS" in env:
             # The children exercise abrupt teardown, where end-of-process
             # leak reports are not a signal: the no-close variant leaves
-            # memory live at exit by design, and close() during a live
-            # call currently leaks that call's object graph — a real,
-            # tracked bug (issue #2) that stays quarantined here until
-            # the fix lands. Leak detection for the close paths runs
-            # in-process: T1/T3/T4 and the unit suite under the ASan
-            # lane cover them at full LSan strictness.
+            # memory live at exit by design. Leak detection for the close
+            # paths runs in-process instead — T1/T3/T4 and the unit suite
+            # (including the close-with-live-call regression test for
+            # issue #2) under the ASan lane, at full LSan strictness.
             env["ASAN_OPTIONS"] += ":detect_leaks=0"
         started = time.monotonic()
         try:

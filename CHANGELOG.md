@@ -4,6 +4,19 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [Unreleased]
+
+### Fixed
+
+- `close()` during a live call no longer leaks the call's native object graph
+  ([#2](https://github.com/daily-co/baresip-python/issues/2)). The stopped
+  event loop could never run a live call's asynchronous SIP teardown, so the
+  terminating session/transaction/dialog objects kept their mutual references
+  and the whole graph became unreachable-but-unfreed (~40 KB per live call).
+  The shim's unwind now runs the stack's forced shutdown — terminating calls,
+  closing sessions, and aborting pending transactions — before the final
+  teardown, verified leak-clean under LeakSanitizer.
+
 ## [0.5.0a1] - 2026-09-06
 
 ### Added
