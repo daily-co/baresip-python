@@ -13,8 +13,9 @@ Pre-1.0, only the latest release receives security fixes.
 
 ## Bundled libraries are our responsibility
 
-Released wheels statically bundle libre, libbaresip, and libopus, and carry OpenSSL with
-them. A security advisory in any of these triggers a patch release of baresip-python with
+Released wheels statically bundle libre, libbaresip, libopus, libvpx, and libg722, and
+carry OpenSSL with them — Linux wheels additionally bundle ALSA's libasound. A security
+advisory in any of these triggers a patch release of baresip-python with
 the updated dependency, independent of the normal release cadence — the policy and pinned
 versions live in [docs/UPGRADING.md](docs/UPGRADING.md). If you deploy the wheels, you
 patch these libraries by upgrading baresip-python, not through your system package manager.
@@ -26,10 +27,11 @@ socket on a publicly addressable host, it will receive traffic you did not invit
 scanners (SIPVicious and friends) probing for open relays, and unsolicited INVITEs from
 strangers. Plan for that:
 
-- **Bind deliberately.** The stack accepts raw configuration text at startup
-  (`runtime.start("net_interface ...\n")`) — pin it to the interface you mean, exactly as
-  the bundled examples pin themselves to loopback for the bench. Do not let a process
-  meant for one network listen on all of them.
+- **Bind deliberately.** Pin the stack to the interface you mean —
+  `runtime.start(Config(net_interface=...))`, with a `sip_listen` line in
+  `Config(extra_config_text=...)` for direct-mode binds — exactly as the bundled
+  examples pin themselves to loopback for the bench. Do not let a process meant for one
+  network listen on all of them.
 - **The default posture is registrar-only.** A user agent that registers to your SIP
   server and dials out needs no exposure to anyone but that server; put it behind the same
   firewalling you would give any internal service, and let the registrar be the party that

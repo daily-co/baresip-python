@@ -8,6 +8,7 @@ description = "Python bindings for the baresip SIP stack — a complete, embedda
 dynamic = ["version"]
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "rajneeshksoni", email = "soni.rajneesh@gmail.com" }]
 license = "BSD-2-Clause"
 # The statically bundled libre/libbaresip are BSD-3; their notices ship in
 # every distribution alongside our own license.
@@ -32,6 +33,12 @@ classifiers = [
     "Topic :: Communications :: Telephony",
 ]
 dependencies = ["cffi>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/daily-co/baresip-python"
+Source = "https://github.com/daily-co/baresip-python"
+Issues = "https://github.com/daily-co/baresip-python/issues"
+Changelog = "https://github.com/daily-co/baresip-python/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
