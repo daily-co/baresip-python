@@ -80,11 +80,7 @@ jobs:
       - run: make ext-tsan
       - run: make test-tsan
 
-  # macOS runs on manual dispatch only: local development already covers it
-  # daily, and macOS runners bill at 10x Linux. Move it to the push trigger
-  # when that trade-off changes.
   macos:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
