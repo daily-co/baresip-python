@@ -31,7 +31,7 @@ import asyncio
 import os
 import platform
 
-from baresip import Account, CallState, Event, Runtime, UserAgent
+from baresip import Account, CallState, Config, Event, Runtime, UserAgent
 
 DOMAIN = os.environ.get("SIP_DOMAIN", "127.0.0.1:15060")
 DRIVER = "coreaudio" if platform.system() == "Darwin" else "alsa"
@@ -39,13 +39,14 @@ DRIVER = "coreaudio" if platform.system() == "Darwin" else "alsa"
 
 async def main():
     runtime = Runtime()
-    # The hardware driver both ways: what the far end says plays on your
-    # speakers, and your microphone is what they hear.
-    conf = f"audio_source {DRIVER},default\naudio_player {DRIVER},default\n"
-    if DOMAIN.startswith(("127.", "localhost")):
+    conf = Config(
+        # The hardware driver both ways: what the far end says plays on
+        # your speakers, and your microphone is what they hear.
+        audio_driver=DRIVER,
         # The bench lives on loopback, which the stack's interface
         # discovery skips unless pinned. Real SIP domains need no pin.
-        conf = "net_interface 127.0.0.1\n" + conf
+        net_interface="127.0.0.1" if DOMAIN.startswith(("127.", "localhost")) else None,
+    )
     await runtime.start(conf)
     try:
         account = Account(

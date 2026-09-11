@@ -27,7 +27,7 @@ import os
 import struct
 import wave
 
-from baresip import Account, Event, Runtime, UserAgent
+from baresip import Account, Config, Event, Runtime, UserAgent
 
 DOMAIN = os.environ.get("SIP_DOMAIN", "127.0.0.1:15060")
 GREETING, RECORDING = "greeting.wav", "recording.wav"
@@ -47,11 +47,13 @@ def write_greeting(path: str, seconds: float = 2.0, rate: int = 8000) -> None:
 async def main():
     write_greeting(GREETING)
     runtime = Runtime()
-    # Equivalent to Config(audio_source=f"aufile,{GREETING}",
-    # audio_player=f"aufile,{RECORDING}") — raw text only because the
-    # bench also needs the stack pinned to loopback.
+    # Greeting out, recording in; pinned to loopback, where the bench lives.
     await runtime.start(
-        f"net_interface 127.0.0.1\naudio_source aufile,{GREETING}\naudio_player aufile,{RECORDING}\n"
+        Config(
+            net_interface="127.0.0.1",
+            audio_source=f"aufile,{GREETING}",
+            audio_player=f"aufile,{RECORDING}",
+        )
     )
     try:
         account = Account(

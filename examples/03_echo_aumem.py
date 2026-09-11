@@ -22,17 +22,16 @@ import math
 import os
 import struct
 
-from baresip import Account, AudioNotActive, Runtime, UserAgent
+from baresip import Account, AudioNotActive, Config, Runtime, UserAgent
 
 DOMAIN = os.environ.get("SIP_DOMAIN", "127.0.0.1:15060")
 
 
 async def main():
     runtime = Runtime()
-    # aumem both ways; pinned to loopback, where the bench lives.
-    await runtime.start(
-        "net_interface 127.0.0.1\naudio_source aumem,default\naudio_player aumem,default\n"
-    )
+    # aumem both ways (the default driver); pinned to loopback, where the
+    # bench lives.
+    await runtime.start(Config(net_interface="127.0.0.1"))
     try:
         account = Account(
             user=os.environ.get("SIP_USER", "1001"),

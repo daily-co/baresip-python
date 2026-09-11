@@ -29,10 +29,12 @@ import os
 import struct
 import sys
 
-from baresip import Account, CallState, Event, Runtime, UserAgent
+from baresip import Account, CallState, Config, Event, Runtime, UserAgent
 
 DOMAIN = os.environ.get("SIP_DOMAIN", "127.0.0.1:15060")
-RAW_CONF = "net_interface 127.0.0.1\naudio_source aumem,default\naudio_player aumem,default\n"
+# aumem audio both ways (the default driver); pinned to loopback, where
+# the bench lives.
+CONF = Config(net_interface="127.0.0.1")
 
 
 def tone(rate: int, seconds: float = 1.0, freq: int = 660) -> bytes:
@@ -85,7 +87,7 @@ async def press(ua, uri: str) -> None:
 
 async def main():
     runtime = Runtime()
-    await runtime.start(RAW_CONF)
+    await runtime.start(CONF)
     try:
         account = Account(
             user=os.environ.get("SIP_USER", "1001"),

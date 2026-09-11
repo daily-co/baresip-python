@@ -32,12 +32,14 @@ example from a second terminal:
 import asyncio
 import os
 
-from baresip import Account, AudioNotActive, AudioRestarted, Runtime, UserAgent
+from baresip import Account, AudioNotActive, AudioRestarted, Config, Runtime, UserAgent
 
 DOMAIN = os.environ.get("SIP_DOMAIN", "127.0.0.1:15060")
 TRANSFER_TO = os.environ.get("TRANSFER_TO", f"sip:9196@{DOMAIN}")
 BRIDGE_SECONDS = float(os.environ.get("BRIDGE_SECONDS", "8"))
-RAW_CONF = "net_interface 127.0.0.1\naudio_source aumem,default\naudio_player aumem,default\n"
+# aumem audio both ways (the default driver); pinned to loopback, where
+# the bench lives.
+CONF = Config(net_interface="127.0.0.1")
 
 
 async def pump(src, dst) -> None:
@@ -58,7 +60,7 @@ async def pump(src, dst) -> None:
 
 async def main():
     runtime = Runtime()
-    await runtime.start(RAW_CONF)
+    await runtime.start(CONF)
     try:
         account = Account(
             user=os.environ.get("SIP_USER", "1001"),

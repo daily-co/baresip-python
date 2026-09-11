@@ -19,7 +19,7 @@ Defaults match the local FreeSWITCH bench (see bench/README.md):
 import asyncio
 import os
 
-from baresip import Account, CallBusy, CallFailed, Runtime, UserAgent
+from baresip import Account, CallBusy, CallFailed, Config, Runtime, UserAgent
 
 DOMAIN = os.environ.get("SIP_DOMAIN", "127.0.0.1:15060")
 
@@ -28,7 +28,11 @@ async def main():
     runtime = Runtime()
     # Tone out, recording in — and pinned to loopback, where the bench lives.
     await runtime.start(
-        "net_interface 127.0.0.1\naudio_source ausine,440\naudio_player aufile,/tmp/dial_rx.wav\n"
+        Config(
+            net_interface="127.0.0.1",
+            audio_source="ausine,440",
+            audio_player="aufile,/tmp/dial_rx.wav",
+        )
     )
     try:
         account = Account(
