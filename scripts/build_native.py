@@ -85,6 +85,11 @@ GPL_LINK_TOKEN = regex.compile(
 _STATIC_EXPORT = regex.compile(r"extern const struct mod_export exports_(\w+);")
 _MODULES_DETECTED = regex.compile(r"MODULES_DETECTED=(.*)")
 
+#: ANSI SGR (color) sequences. Some environments colorize cmake's configure
+#: output even when captured (CLICOLOR_FORCE, newer cmake), and a trailing
+#: reset code would otherwise contaminate the last parsed module name.
+_ANSI_SGR = regex.compile(r"\x1b\[[0-9;]*m")
+
 
 class BuildPolicyError(SystemExit):
     """A build-policy violation. Exits non-zero with an explanation."""
@@ -116,7 +121,7 @@ def parse_modules_detected(configure_output: str) -> set[str]:
     Used as a cross-check against the static.c parse.
     """
     for line in configure_output.splitlines():
-        match = _MODULES_DETECTED.search(line)
+        match = _MODULES_DETECTED.search(_ANSI_SGR.sub("", line))
         if match:
             value = match.group(1).strip()
             return {m for m in value.split(";") if m}

@@ -59,6 +59,13 @@ def test_parse_modules_detected_from_configure_output():
     assert parse_modules_detected(out) == {"g711", "opus", "srtp"}
 
 
+def test_parse_modules_detected_strips_ansi_color():
+    # Colorized cmake output: an SGR start before the line and a reset at
+    # its end, which must not end up inside the last module name.
+    out = "-- Some line\n\x1b[35mMODULES_DETECTED=g711;opus;alsa\x1b[0m\n-- Configuring done\n"
+    assert parse_modules_detected(out) == {"g711", "opus", "alsa"}
+
+
 # --- GPL module check (seeded fakes) ------------------------------------------
 
 
