@@ -22,7 +22,8 @@ programmatic PCM audio and VP8 video access, and DTMF, with an asyncio-native AP
 Releases install from PyPI (`pip install --pre baresip-python` — pre-releases need the
 flag). For development, build from a source checkout: you need
 [uv](https://docs.astral.sh/uv/), a C compiler, cmake, and the OpenSSL, opus, and libvpx
-development headers (`apt install cmake libssl-dev libopus-dev libvpx-dev libv4l-dev` on
+development headers (`apt install cmake libssl-dev libopus-dev libvpx-dev libv4l-dev
+libasound2-dev` on
 Debian/Ubuntu, `brew install cmake openssl@3 opus libvpx` on macOS):
 
 ```
