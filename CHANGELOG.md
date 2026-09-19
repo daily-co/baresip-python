@@ -4,7 +4,12 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
-## [Unreleased]
+## [0.5.2a1] - 2026-09-19
+
+A point release: SIP accounts gain an escape hatch for parameters the typed
+fields don't model — media-NAT traversal (ICE/STUN) in particular — and the
+wheel build's module-completeness cross-check no longer trips over colorized
+cmake output.
 
 ### Added
 
@@ -14,6 +19,15 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   typed fields don't model. Media-NAT traversal is the motivating case
   (`("medianat=ice", "stunserver=stun:host:port")`). Only control characters
   are rejected, and it is omitted from `repr()` since it may carry a credential.
+
+### Fixed
+
+- Module-completeness detection strips ANSI color sequences from cmake's
+  configure output before parsing `MODULES_DETECTED`, so a colorized build
+  environment (`CLICOLOR_FORCE`, newer cmake) can no longer contaminate the last
+  parsed module name and trip the build's module-set cross-check.
+- The remaining examples (`02`–`07`) start the runtime with a `Config` object,
+  completing the Config-only `Runtime.start()` migration from 0.5.0a1.
 
 ## [0.5.1a1] - 2026-09-07
 
