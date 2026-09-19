@@ -4,6 +4,17 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [Unreleased]
+
+### Added
+
+- `Account.extra_params`: extra account parameters appended verbatim to the
+  address-of-record, each a `"key=value"` string — the per-account escape hatch
+  matching `Config.extra_config_text` at the global scope, for directives the
+  typed fields don't model. Media-NAT traversal is the motivating case
+  (`("medianat=ice", "stunserver=stun:host:port")`). Only control characters
+  are rejected, and it is omitted from `repr()` since it may carry a credential.
+
 ## [0.5.1a1] - 2026-09-07
 
 A point release: the live-call close leak is fixed, and the package metadata now

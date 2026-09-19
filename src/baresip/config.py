@@ -71,6 +71,19 @@ class Account:
             (credential-list trunks, for example). None authenticates as
             ``user``. Travels as a bare parameter, so it cannot contain
             spaces, quotes, backslashes, semicolons, or angle brackets.
+        extra_params: Extra account parameters appended verbatim to the
+            address-of-record, each a ``"key=value"`` string — the escape
+            hatch to per-account directives the modeled fields above do not
+            cover, media-NAT traversal in particular
+            (``("medianat=ice", "stunserver=stun:host:port")``; ``stunserver``
+            has no effect unless ``medianat`` selects a NAT method). Rendered
+            in order after the modeled parameters. Only control characters
+            are rejected; the key and any quoting are otherwise yours to get
+            right, and the stack ignores an unknown key, so a typo here fails
+            quietly — prefer a real field when one exists. May carry a
+            credential (a TURN password, say), so — like the password — it is
+            omitted from ``repr()`` and its rendered line must never be
+            logged.
     """
 
     user: str
@@ -82,6 +95,7 @@ class Account:
     audio_codecs: tuple[str, ...] = ("pcmu", "pcma")
     dtmf_mode: Literal["rtpevent", "info", "auto"] = "rtpevent"
     auth_user: str | None = None
+    extra_params: tuple[str, ...] = ()
 
     def __post_init__(self):
         if not self.user:
@@ -114,6 +128,10 @@ class Account:
             if not self.auth_user:
                 raise ValueError("auth_user must not be empty; use None to authenticate as user")
             _reject_chars("auth_user", self.auth_user, ';<>"\\')
+        for param in self.extra_params:
+            if not param:
+                raise ValueError("extra_params must not contain an empty string")
+            _reject_chars("extra_params", param, allow_space=True)
 
     def aor(self) -> str:
         """The address-of-record line the stack's account parser consumes.
@@ -137,6 +155,7 @@ class Account:
             if not uri.startswith(("sip:", "sips:")):
                 uri = f"sip:{uri}"
             params.append(f'outbound="{uri}"')
+        params.extend(self.extra_params)
         return f"<sip:{self.user}@{self.domain};transport={self.transport}>;" + ";".join(params)
 
     def __repr__(self) -> str:

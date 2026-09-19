@@ -70,12 +70,44 @@ def test_aor_registrar_uri_is_not_double_prefixed():
     assert 'outbound="sips:sbc.example.com"' in aor
 
 
+def test_aor_extra_params_appended_golden():
+    account = Account(
+        user="alice",
+        domain="example.com",
+        password="s3cret",
+        extra_params=("medianat=ice", "stunserver=stun:stun.example.com:3478"),
+    )
+    assert account.aor() == (
+        '<sip:alice@example.com;transport=udp>;auth_pass="s3cret";regint=600;'
+        "answermode=manual;audio_codecs=pcmu,pcma;dtmfmode=rtpevent;"
+        "medianat=ice;stunserver=stun:stun.example.com:3478"
+    )
+
+
+def test_aor_extra_params_absent_by_default():
+    aor = Account(user="alice", domain="example.com", password="x").aor()
+    assert "medianat" not in aor
+
+
 def test_repr_redacts_the_password():
     account = Account(user="alice", domain="example.com", password="s3cret")
     assert "s3cret" not in repr(account)
     assert "***" in repr(account)
     # An unset password is shown as such, not as a fake redaction.
     assert "'***'" not in repr(Account(user="alice", domain="example.com", password=""))
+
+
+def test_repr_omits_extra_params():
+    # extra_params may carry a credential (a TURN password), so it stays out
+    # of repr() the way the password does.
+    account = Account(
+        user="alice",
+        domain="example.com",
+        password="x",
+        extra_params=("turn=turn:relay.example.com", "turn_password=topsecret"),
+    )
+    assert "topsecret" not in repr(account)
+    assert "extra_params" not in repr(account)
 
 
 @pytest.mark.parametrize(
@@ -103,6 +135,8 @@ def test_repr_redacts_the_password():
         {"auth_user": "a b"},  # bare parameter: no quoting to hide a space
         {"auth_user": "a;b"},  # ends the parameter early
         {"auth_user": 'a"b'},
+        {"extra_params": ("",)},  # renders a stray ';;'
+        {"extra_params": ("medianat=ice\n",)},  # control char breaks the line
     ],
 )
 def test_account_rejects_what_the_parser_would_misread(kwargs):
