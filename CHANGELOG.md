@@ -4,6 +4,39 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [0.5.2a2] - 2026-09-29
+
+Jitter-buffer statistics are now real. Every wheel so far compiled them out —
+baresip keeps them behind `#ifndef RELEASE`, and libre's build defines
+`RELEASE` for any non-Debug configuration — so `CallStats.jbuf_*` read zero
+on every call, whatever the buffer was doing. The native build now keeps
+them in, the report says when they are absent instead of zeroing them, and
+two more counters ride along.
+
+### Added
+
+- `CallStats.jbuf_out_of_sequence`: frames that arrived out of sequence
+  order — the reordering a jitter buffer exists to absorb.
+- `CallStats.jbuf_skew_ms`: the sender-versus-receiver clock drift the
+  jitter buffer currently measures; it re-anchors playout (dropping one
+  frame) when this exceeds 20 ms across a 10 s window.
+
+### Changed
+
+- `CallStats.jbuf_*` fields are typed `int | None` and read `None` when the
+  stack reports no jitter-buffer statistics; previously an absent report
+  read as `0`, indistinguishable from a measured zero. Code doing arithmetic
+  on these fields must handle `None`.
+
+### Fixed
+
+- `jbuf_delay_ms`, `jbuf_late`, `jbuf_lost`, `jbuf_overflow` and
+  `jbuf_jitter_ms` always read `0`: the counters were compiled out of the
+  native library. The build now defines `JBUF_STAT` explicitly.
+  `jbuf_delay_ms` reports the playout offset in force — the configured
+  minimum in fixed mode (100 with the stack default), the adapted value in
+  adaptive mode.
+
 ## [0.5.2a1] - 2026-09-19
 
 A point release: SIP accounts gain an escape hatch for parameters the typed

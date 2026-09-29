@@ -45,7 +45,7 @@ from baresip.stats import CallStats
 # the application configures handlers.
 logging.getLogger("baresip").addHandler(logging.NullHandler())
 
-__version__ = "0.5.2a1"
+__version__ = "0.5.2a2"
 
 # Names that pull in the native extension are resolved lazily (PEP 562), so
 # that `import baresip` — and with it the version lookup done by build
