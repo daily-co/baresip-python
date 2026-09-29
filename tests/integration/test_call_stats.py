@@ -103,6 +103,12 @@ async def test_echo_call_yields_a_consistent_final_report():
     assert stats.tx_bytes > stats.tx_packets * 100  # 160-byte payloads
     assert stats.rx_lost <= 5
 
+    # The jitter buffer's counters are compiled in and reported, and the
+    # playout offset is the stack default's configured minimum (fixed mode,
+    # 100-200 ms) — not a zero standing in for "unavailable".
+    assert stats.jbuf_delay_ms == 100
+    assert stats.jbuf_late is not None and stats.jbuf_skew_ms is not None
+
     # The loss-free loopback bench sits at the model's ceiling.
     assert stats.mos_estimate >= 4.3
 

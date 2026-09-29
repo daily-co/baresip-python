@@ -309,6 +309,15 @@ def build(
         shutil.copy2(header, prefix / "include" / header.name)
 
     # --- baresip (static, explicit module list) ---
+    # baresip compiles its jitter-buffer statistics only `#ifndef RELEASE`,
+    # and libre's exported config defines RELEASE for every non-Debug
+    # build — so a Release build reports every jbuf counter as zero
+    # (jbuf_stats() returns ENOSYS). Defining JBUF_STAT here keeps the
+    # counters in: the `#if JBUF_STAT` test sees the macro even though the
+    # guarded block that would normally define it is skipped. CMAKE_C_FLAGS
+    # on the command line replaces the environment's CFLAGS, so those ride
+    # along.
+    cflags = " ".join(filter(None, [os.environ.get("CFLAGS"), "-DJBUF_STAT=1"]))
     bs_build = baresip_src / "build"
     configure_out = _run(
         [
@@ -319,6 +328,7 @@ def build(
             f"-DMODULES={';'.join(modules)}",
             f"-Dre_DIR={prefix}/lib/cmake/re",
             f"-DCMAKE_PREFIX_PATH={prefix}",
+            f"-DCMAKE_C_FLAGS={cflags}",
             *common,
         ],
         cwd=baresip_src,

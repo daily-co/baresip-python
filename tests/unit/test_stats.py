@@ -34,7 +34,15 @@ PAYLOAD = {
         "rx_jitter_us": 3500,
         "rtt_us": 40000,
     },
-    "jbuf": {"late": 2, "lost": 1, "overflow": 0, "delay_ms": 40, "jitter_ms": 12},
+    "jbuf": {
+        "late": 2,
+        "lost": 1,
+        "overflow": 0,
+        "oos": 3,
+        "delay_ms": 40,
+        "jitter_ms": 12,
+        "skew_ms": -4,
+    },
     "audio": {
         "tx_silence_frames": 50,
         "tx_starved_frames": 0,
@@ -51,6 +59,7 @@ def test_payload_maps_to_typed_fields():
     assert stats.tx_lost == 1 and stats.rx_lost == 10
     assert stats.rx_jitter_ms == 3.5 and stats.rtt_ms == 40.0  # us on the wire
     assert stats.jbuf_delay_ms == 40
+    assert stats.jbuf_out_of_sequence == 3 and stats.jbuf_skew_ms == -4
     assert stats.audio_rx_discarded_bytes == 320
 
 
@@ -58,6 +67,15 @@ def test_missing_payload_pieces_default_to_zero():
     stats = CallStats._from_payload({})
     assert stats.tx_packets == 0 and stats.rtt_ms == 0.0
     assert stats.mos_estimate >= 4.3  # zeros read as a perfect, empty call
+
+
+def test_absent_jbuf_reads_as_not_reported():
+    # A stack built without jitter-buffer statistics leaves the object out
+    # of the payload; that must not read as a measured zero.
+    stats = CallStats._from_payload({k: v for k, v in PAYLOAD.items() if k != "jbuf"})
+    assert stats.jbuf_delay_ms is None and stats.jbuf_late is None
+    assert stats.jbuf_out_of_sequence is None and stats.jbuf_skew_ms is None
+    assert stats.mos_estimate == CallStats._from_payload(PAYLOAD).mos_estimate
 
 
 def test_mos_model_shape():
