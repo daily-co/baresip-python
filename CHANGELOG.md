@@ -4,6 +4,21 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [0.5.2a3] - 2026-10-01
+
+A logging fix: the stack's log and SIP threads carry no context of their own,
+so what crossed from them into Python arrived without the request-scoped
+values a host sets around a session. The context active at `Runtime.start()`
+now travels with them.
+
+### Fixed
+
+- Native log records, event callbacks, and the notices the stack's own
+  threads log (the unexpected-exit critical among them) now run in the
+  context that was active when `Runtime.start()` was called. A loguru
+  `contextualize` field or a correlation id set there appears on them, and
+  on whatever an event handler logs in turn.
+
 ## [0.5.2a2] - 2026-09-29
 
 Jitter-buffer statistics are now real. Every wheel so far compiled them out —
