@@ -7,12 +7,15 @@
 """Bringing the SIP stack up and down: the configuration it is given, what
 it is allowed to touch, what it is allowed to print, and what it says."""
 
+import asyncio
 import contextlib
+import contextvars
 import errno
 import logging
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -26,6 +29,10 @@ from baresip.runtime import Runtime  # imports the extension, hence after the sk
 # An address the stack cannot listen on: enough to fail ua_init, which is
 # the last step of bringing it up.
 UNUSABLE_CONFIG = Config(extra_config_text="sip_listen 999.999.999.999:5060")
+
+# Stands in for the request-scoped values an application sets around
+# start() — a session id, a correlation id, a loguru contextualize field.
+SESSION = contextvars.ContextVar("session")
 
 
 @contextlib.contextmanager
@@ -77,6 +84,47 @@ async def test_log_level_is_applied_from_the_start():
     assert not [r for r in captured if r.levelno < logging.ERROR], (
         f"levels below the configured one leaked through: {[r.getMessage() for r in captured]}"
     )
+
+
+async def test_native_log_records_carry_the_starting_context():
+    """Records are emitted on the log thread, which has no context of its
+    own; a handler must still see what was set around start()."""
+    seen: list = []
+    native_log = logging.getLogger("baresip.native")
+    handler = logging.Handler()
+    handler.emit = lambda record: seen.append(SESSION.get(None))
+    previous = native_log.level
+    native_log.addHandler(handler)
+    native_log.setLevel(logging.DEBUG)
+
+    SESSION.set("session-7")
+    try:
+        runtime = Runtime(native_log_level="debug")
+        await runtime.start()
+        await runtime.close()
+    finally:
+        native_log.removeHandler(handler)
+        native_log.setLevel(previous)
+
+    assert seen, "the stack logs while starting; none of it was captured"
+    assert set(seen) == {"session-7"}
+
+
+async def test_event_callbacks_carry_the_starting_context():
+    """Events reach the loop from the SIP thread, which has no context of
+    its own; the callback must run in the one set around start()."""
+    SESSION.set("session-8")
+    runtime = Runtime()
+    await runtime.start()
+    try:
+        seen = asyncio.get_running_loop().create_future()
+        # What the SIP thread does with every event it hands over.
+        threading.Thread(
+            target=runtime._call_threadsafe, args=(lambda: seen.set_result(SESSION.get(None)),)
+        ).start()
+        assert await asyncio.wait_for(seen, 5) == "session-8"
+    finally:
+        await runtime.close()
 
 
 async def test_unusable_config_is_rejected_and_leaves_the_process_usable():

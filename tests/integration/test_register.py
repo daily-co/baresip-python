@@ -9,6 +9,7 @@
 Run with: pytest -m bench tests/integration
 """
 
+import contextvars
 import logging
 import os
 
@@ -23,6 +24,10 @@ from baresip.ua import UserAgent
 pytestmark = pytest.mark.bench
 
 DOMAIN = f"127.0.0.1:{os.environ.get('BENCH_SIP_PORT', '15060')}"
+
+# Stands in for the request-scoped values an application sets around
+# start() — a session id, a correlation id, a loguru contextualize field.
+SESSION = contextvars.ContextVar("session")
 
 
 def bench_account(password: str = "bench1234") -> Account:
@@ -57,6 +62,25 @@ async def test_register_carries_instance_id(caplog):
         assert f'+sip.instance="<urn:uuid:{instance}>"' in caplog.text
     finally:
         await rt.close()
+
+
+async def test_event_listeners_carry_the_starting_context():
+    """Registration events come off the SIP thread, which has no context of
+    its own; a listener must run in the one set around start()."""
+    seen: list = []
+    SESSION.set("session-9")
+    rt = Runtime()
+    await rt.start()
+    rt.subscribe(lambda _event: seen.append(SESSION.get(None)))
+    try:
+        ua = await UserAgent.create(rt, bench_account())
+        await ua.register()
+        await ua.unregister()
+    finally:
+        await rt.close()
+
+    assert seen, "registration produced no stack event"
+    assert set(seen) == {"session-9"}
 
 
 async def test_wrong_password_is_rejected_with_status(runtime):

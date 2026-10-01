@@ -10,6 +10,8 @@ ERROR-class failure produces exactly one structured record at the
 contracted severity, carrying its correlation extras)."""
 
 import asyncio
+import contextlib
+import contextvars
 import errno
 import logging
 
@@ -24,6 +26,28 @@ lib = native.lib
 from baresip.runtime import Runtime  # imports the extension, hence after the skip
 
 UNKNOWN_CMD = 999  # no case in cmd_handler: sent fine, never completes
+
+# Stands in for the request-scoped values an application sets around
+# start() — a session id, a correlation id, a loguru contextualize field.
+SESSION = contextvars.ContextVar("session")
+
+
+@contextlib.contextmanager
+def runtime_records():
+    """Collect every ``baresip.runtime`` message with the SESSION value the
+    thread that logged it could see.
+
+    Detaches afterwards: the logger is process-wide, and a handler left on
+    it would follow every later test."""
+    seen: list = []
+    runtime_log = logging.getLogger("baresip.runtime")
+    handler = logging.Handler()
+    handler.emit = lambda record: seen.append((record.getMessage(), SESSION.get(None)))
+    runtime_log.addHandler(handler)
+    try:
+        yield seen
+    finally:
+        runtime_log.removeHandler(handler)
 
 
 async def test_echo_command_resolves_future():
@@ -127,27 +151,51 @@ async def test_typoed_audio_driver_fails_start_loudly():
 
 
 async def test_dead_sip_thread_fails_pending_and_poisons_process():
+    """The death notice is logged on the SIP thread itself, so it also
+    pins that such a record carries the context start() was called in."""
+    SESSION.set("session-5")
+    with runtime_records() as seen:
+        runtime = Runtime()
+        await runtime.start()
+        died = asyncio.Event()
+        runtime.on_dead = died.set
+
+        pending = asyncio.create_task(runtime.cmd(UNKNOWN_CMD, timeout=30))
+        await asyncio.sleep(0.05)  # let the command get queued
+
+        # Kill the loop behind the runtime's back: an unexpected re_main exit.
+        assert lib.bp_cmd(lib.BP_CMD_STOP, 0, ffi.NULL) == 0
+        await asyncio.wait_for(died.wait(), timeout=5)
+
+        with pytest.raises(RuntimeDead):
+            await pending
+        with pytest.raises(RuntimeDead):
+            await runtime.cmd(lib.BP_CMD_PING)
+        with pytest.raises(RuntimeDead):
+            await Runtime().start()
+
+        runtime._thread.join(timeout=5)
+        assert not runtime._thread.is_alive()
+
+    notices = [ctx for msg, ctx in seen if msg.startswith("SIP thread exited unexpectedly")]
+    assert notices == ["session-5"]
+
+
+async def test_close_runs_its_worker_thread_work_in_the_calling_context():
+    """close() hands its blocking steps to a worker thread, which runs in
+    a copy of the context close() was called in — not the one start()
+    snapshotted — so what they log there is tagged too."""
+    SESSION.set("session-6")
     runtime = Runtime()
     await runtime.start()
-    died = asyncio.Event()
-    runtime.on_dead = died.set
 
-    pending = asyncio.create_task(runtime.cmd(UNKNOWN_CMD, timeout=30))
-    await asyncio.sleep(0.05)  # let the command get queued
+    seen: list = []
+    real_stop = runtime._stop_native_log
+    runtime._stop_native_log = lambda: (seen.append(SESSION.get(None)), real_stop())
 
-    # Kill the loop behind the runtime's back: an unexpected re_main exit.
-    assert lib.bp_cmd(lib.BP_CMD_STOP, 0, ffi.NULL) == 0
-    await asyncio.wait_for(died.wait(), timeout=5)
-
-    with pytest.raises(RuntimeDead):
-        await pending
-    with pytest.raises(RuntimeDead):
-        await runtime.cmd(lib.BP_CMD_PING)
-    with pytest.raises(RuntimeDead):
-        await Runtime().start()
-
-    runtime._thread.join(timeout=5)
-    assert not runtime._thread.is_alive()
+    SESSION.set("session-6-closing")
+    await runtime.close()
+    assert seen == ["session-6-closing"]
 
 
 # -- failure-loudness contract -------------------------------------------------

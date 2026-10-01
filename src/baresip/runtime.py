@@ -16,6 +16,7 @@ new process.
 import asyncio
 import atexit
 import contextlib
+import contextvars
 import errno as _errno
 import json
 import logging
@@ -106,6 +107,7 @@ class Runtime:
         self._conf_dir: str | None = None
         self._config_text = _DEFAULT_CONFIG
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._ctx: contextvars.Context | None = None
         self._thread: threading.Thread | None = None
         self._log_thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -125,6 +127,13 @@ class Runtime:
 
     async def start(self, config: Config | None = None) -> None:
         """Start the SIP thread and wait for it to become ready.
+
+        The stack's own threads carry no context, so the context active
+        here is the one everything crossing from them into Python runs in:
+        native log records, event callbacks, and the notices the threads
+        log themselves. Request-scoped values set before this call —
+        loguru ``contextualize`` fields, a correlation id — appear on all
+        of them.
 
         Args:
             config: A :class:`Config` (None starts with the stack's own
@@ -189,6 +198,9 @@ class Runtime:
                 raise BaresipError(f"native init failed: {os.strerror(err)}")
 
             self._loop = asyncio.get_running_loop()
+            # Snapshotted before anything the stack drives exists, so every
+            # thread and callback below has one to enter.
+            self._ctx = contextvars.copy_context()
             set_sink(self._on_native_event)
             # The stack is confined to this directory: whatever a module
             # decides to read or write, it cannot reach the invoking user's
@@ -210,7 +222,7 @@ class Runtime:
             )
             self._thread.start()
 
-            ok = await self._loop.run_in_executor(None, self._ready.wait, 5)
+            ok = await asyncio.to_thread(self._ready.wait, 5)
             if not ok or self._init_err:
                 detail = os.strerror(self._init_err) if self._init_err else "no ready signal"
                 raise BaresipError(f"SIP thread failed to start: {detail}")
@@ -265,9 +277,11 @@ class Runtime:
         if self._watchdog_task:
             self._watchdog_task.cancel()
 
-        await self._loop.run_in_executor(None, self._send_stop)
+        # to_thread, not run_in_executor: the worker runs in a copy of this
+        # context, so whatever it logs is tagged like the rest of the session.
+        await asyncio.to_thread(self._send_stop)
         assert self._thread is not None
-        await self._loop.run_in_executor(None, self._thread.join, 5)
+        await asyncio.to_thread(self._thread.join, 5)
 
         if self._thread.is_alive():
             # A wedged SIP thread is death, not closure: poison the process,
@@ -283,7 +297,7 @@ class Runtime:
             )
             self._fail_pending(RuntimeDead("SIP thread failed to stop"))
             set_sink(None)
-            await self._loop.run_in_executor(None, self._stop_native_log)
+            await asyncio.to_thread(self._stop_native_log)
             self._remove_conf_dir()
             raise RuntimeDead("SIP thread did not stop within 5s")
 
@@ -292,7 +306,7 @@ class Runtime:
         self._fail_pending(BaresipError("runtime closed"))
         # After the SIP thread is gone: no more lines can arrive, and the
         # reader hands over what is left before it stops.
-        await self._loop.run_in_executor(None, self._stop_native_log)
+        await asyncio.to_thread(self._stop_native_log)
         lib.bp_close()
         self._remove_conf_dir()
         self._state = "closed"
@@ -305,22 +319,31 @@ class Runtime:
 
         Blocks inside the native read, which releases the GIL, so this
         thread costs nothing while the stack is quiet."""
+        # This thread's own copy of the snapshot start() took: one Context
+        # cannot be entered from two threads at once, and the loop enters
+        # copies of its own for event callbacks.
+        ctx = self._ctx.copy()
         rec = ffi.new("struct bp_log_rec *")
         while lib.bp_log_read(rec):
-            try:
-                if rec.dropped:
-                    native_logger.warning(
-                        "%d native log line(s) dropped: the reader could not keep up", rec.dropped
-                    )
-                target = sip_logger if rec.channel == lib.BP_LOG_CH_SIP else native_logger
-                # Bytes off the network reach us here, so neither valid
-                # UTF-8 nor the absence of NULs can be assumed.
-                text = ffi.buffer(rec.msg, rec.len)[:].decode("utf-8", "replace")
-                target.log(_TO_PYTHON_LEVEL.get(rec.level, logging.INFO), "%s", text)
-            except Exception:
-                # A logging handler that raises must not end log capture.
-                with contextlib.suppress(Exception):
-                    logger.exception("native log line could not be delivered")
+            ctx.run(self._emit_native_log, rec)
+
+    def _emit_native_log(self, rec) -> None:
+        """LOG THREAD, inside the context :meth:`start` was called in, so
+        that handlers see the values the application had set there."""
+        try:
+            if rec.dropped:
+                native_logger.warning(
+                    "%d native log line(s) dropped: the reader could not keep up", rec.dropped
+                )
+            target = sip_logger if rec.channel == lib.BP_LOG_CH_SIP else native_logger
+            # Bytes off the network reach us here, so neither valid
+            # UTF-8 nor the absence of NULs can be assumed.
+            text = ffi.buffer(rec.msg, rec.len)[:].decode("utf-8", "replace")
+            target.log(_TO_PYTHON_LEVEL.get(rec.level, logging.INFO), "%s", text)
+        except Exception:
+            # A logging handler that raises must not end log capture.
+            with contextlib.suppress(Exception):
+                logger.exception("native log line could not be delivered")
 
     def _stop_native_log(self) -> None:
         lib.bp_log_stop()
@@ -358,7 +381,8 @@ class Runtime:
             self._stack_down.set()
             closing = self._state in ("closing", "closed")
             if err:
-                logger.log(
+                self._run_in_ctx(
+                    logger.log,
                     logging.ERROR if closing else logging.CRITICAL,
                     "SIP loop exited with error: %s",
                     os.strerror(err),
@@ -373,7 +397,8 @@ class Runtime:
         with Runtime._class_lock:
             Runtime._active = None
             Runtime._process_poisoned = True
-        logger.critical(
+        self._run_in_ctx(
+            logger.critical,
             "SIP thread exited unexpectedly; runtime is dead, %d command(s) failed. "
             "Restart requires a new process.",
             len(self._pending),
@@ -382,7 +407,7 @@ class Runtime:
         # Signal only — this runs on the SIP thread, and the log reader
         # stops itself once it has handed over the last lines.
         lib.bp_log_stop()
-        self._remove_conf_dir()
+        self._run_in_ctx(self._remove_conf_dir)
         self._call_threadsafe(self._finish_death)
 
     def _finish_death(self) -> None:
@@ -558,16 +583,33 @@ class Runtime:
         """RE THREAD. Hop to the asyncio loop; never block, never raise."""
         self._call_threadsafe(self._dispatch, ev, handle, payload)
 
+    def _run_in_ctx(self, fn, *args) -> None:
+        """Run ``fn`` in the context :meth:`start` was called in.
+
+        For what the stack's own threads do themselves rather than hand to
+        the loop — they have no context, so a record logged there would
+        otherwise carry none.
+        """
+        ctx = self._ctx.copy() if self._ctx is not None else contextvars.copy_context()
+        ctx.run(fn, *args)
+
     def _call_threadsafe(self, fn, *args) -> None:
         loop = self._loop
         try:
             if loop is None or loop.is_closed():
                 raise RuntimeError("no loop")
-            loop.call_soon_threadsafe(fn, *args)
+            # call_soon_threadsafe runs the callback in the calling thread's
+            # context, and the stack's threads have none: the snapshot
+            # start() took goes with it instead. A fresh copy per call
+            # (O(1)) — one Context cannot be entered from two threads at
+            # once, and the log thread is inside one of its own.
+            context = self._ctx.copy() if self._ctx is not None else None
+            loop.call_soon_threadsafe(fn, *args, context=context)
         except RuntimeError:
             self._dropped_events += 1
             if self._dropped_events == 1 or self._dropped_events % 100 == 0:
-                logger.warning(
+                self._run_in_ctx(
+                    logger.warning,
                     "event loop unavailable; %d event(s) dropped so far",
                     self._dropped_events,
                 )
