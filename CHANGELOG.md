@@ -4,6 +4,19 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [0.6.0] - 2026-10-29
+
+The first final release. The package is what 0.5.2a3 shipped, unchanged: no
+code differs between the two, and the public API is the `__all__` of 0.5.2a3.
+A plain `pip install baresip-python` now installs it; the pre-releases before
+it needed `--pre`.
+
+### Changed
+
+- Development status classifier is Production/Stable. Versioning stays SemVer
+  with the 0.x caveat: a minor version may break the API, and every break is
+  called out here.
+
 ## [0.5.2a3] - 2026-10-01
 
 A logging fix: the stack's log and SIP threads carry no context of their own,

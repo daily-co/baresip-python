@@ -3,7 +3,7 @@
 ## Building the wheels
 
 The `wheels` workflow builds the distributable wheel set with cibuildwheel:
-manylinux_2_28 x86_64 and aarch64, macOS arm64 and x86_64, for CPython 3.11 through 3.13.
+manylinux_2_28 x86_64 and aarch64, macOS arm64 and x86_64, for CPython 3.11 through 3.14.
 It runs on demand (`workflow_dispatch`) and on `v*` tag pushes. The static configuration —
 interpreter selection, container images, the before-all native build, and the per-wheel
 test command — lives in `[tool.cibuildwheel]` in `pyproject.toml`.

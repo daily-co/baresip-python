@@ -20,7 +20,7 @@ license-files = [
 ]
 keywords = ["sip", "voip", "baresip", "telephony", "rtp"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Telecommunications Industry",
     "Operating System :: POSIX :: Linux",

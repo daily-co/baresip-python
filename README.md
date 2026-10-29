@@ -4,9 +4,8 @@ Python bindings for the [baresip](https://github.com/baresip/baresip) SIP stack 
 embeddable SIP user agent for Python applications: registration, inbound and outbound calls,
 programmatic PCM audio and VP8 video access, and DTMF, with an asyncio-native API.
 
-> **Status: alpha, under active development.** Current release: `v0.5.2a3` on PyPI.
-> The API may still change between pre-releases; every break is called out in the
-> CHANGELOG.
+> Current release: `v0.6.0` on PyPI. Versioning is SemVer with the 0.x caveat: a minor
+> version may break the API, and every break is called out in the CHANGELOG.
 
 ## What this is
 
@@ -19,8 +18,8 @@ programmatic PCM audio and VP8 video access, and DTMF, with an asyncio-native AP
 
 ## Quick start
 
-Releases install from PyPI (`pip install --pre baresip-python` — pre-releases need the
-flag). For development, build from a source checkout: you need
+Releases install from PyPI (`pip install baresip-python`). For development, build from a
+source checkout: you need
 [uv](https://docs.astral.sh/uv/), a C compiler, cmake, and the OpenSSL, opus, and libvpx
 development headers (`apt install cmake libssl-dev libopus-dev libvpx-dev libv4l-dev
 libasound2-dev` on
@@ -192,7 +191,7 @@ among them) that log through loguru.
 
 ## Platform support
 
-Linux (x86_64, aarch64) and macOS (Apple Silicon and Intel), CPython 3.11–3.13. On Windows,
+Linux (x86_64, aarch64) and macOS (Apple Silicon and Intel), CPython 3.11–3.14. On Windows,
 [WSL2](https://learn.microsoft.com/windows/wsl/) is the supported path for now — the Linux
 build runs there as-is; native Windows support is a design goal the code keeps its door
 open for, but it is not built or tested today.
