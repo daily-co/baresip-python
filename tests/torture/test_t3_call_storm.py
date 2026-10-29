@@ -91,6 +91,9 @@ async def test_t3_call_storm(rng):
             if (i + 1) % CHECK_EVERY == 0:
                 await drain_loop()
                 await expect_call_slots_empty(runtime, f"call {i + 1}", ua=2)
-                bounds.check(f"call {i + 1}")
+                # Measured on the nightly lane (glibc, plain build): past the
+                # warm-up the curve still climbs 5-6 MiB by call 1200 and is
+                # flat from there; LSan on the ASan lane sees no leak.
+                bounds.check(f"call {i + 1}", allowance_kb=8 * 1024)
     finally:
         await runtime.close()

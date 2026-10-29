@@ -159,4 +159,8 @@ def test_t8_shutdown_roulette(rng):
         assert elapsed < 20, f"iteration {i + 1} seed {seed}: took {elapsed:.1f}s"
 
         if (i + 1) % CHECK_EVERY == 0:
-            bounds.check(f"iteration {i + 1}")
+            # This measures the parent, which only runs subprocess.run in a
+            # loop; the stack lives in the children. CPython's allocator grows
+            # 5-6 MiB over the first hundred runs on the nightly lane (glibc)
+            # and is flat from there.
+            bounds.check(f"iteration {i + 1}", allowance_kb=8 * 1024)
