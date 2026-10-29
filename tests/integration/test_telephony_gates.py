@@ -17,6 +17,7 @@ import array
 import asyncio
 import collections
 import contextlib
+import dataclasses
 import logging
 import math
 import os
@@ -363,7 +364,9 @@ async def test_tls_register_and_echo_call():
     assert " " not in str(BENCH_CERT), "bench checkout path must not contain spaces"
 
     runtime = Runtime()
-    await runtime.start(RAW_CONF + f"sip_cafile {BENCH_CERT}\n")
+    await runtime.start(
+        dataclasses.replace(RAW_CONF, extra_config_text=f"sip_cafile {BENCH_CERT}\n")
+    )
     try:
         ua = await make_ua(runtime, domain=TLS_DOMAIN, transport="tls")
         call, info = await dial_ready(ua, f"sip:9196@{TLS_DOMAIN};transport=tls")

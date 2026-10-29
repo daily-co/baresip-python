@@ -21,7 +21,7 @@ native = pytest.importorskip("baresip._native")
 
 from test_telephony_gates import capture_sip_trace, fs_cli, parse_sip_records
 
-from baresip import Account, AudioNotActive, AudioRestarted, Event
+from baresip import Account, AudioNotActive, AudioRestarted, Config, Event
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
 
@@ -35,7 +35,12 @@ async def echo_call(tmp_path):
     """An established call to the echo service, with SIP tracing on."""
     runtime = Runtime()
     await runtime.start(
-        f"net_interface 127.0.0.1\naudio_source ausine,440\naudio_player aufile,{tmp_path}/rx.wav\n"
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            audio_source="ausine,440",
+            audio_player=f"aufile,{tmp_path}/rx.wav",
+        )
     )
     await runtime.set_sip_trace(True)
     ua = await UserAgent.create(runtime, Account(user="1003", password="bench1234", domain=DOMAIN))
