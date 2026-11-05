@@ -20,7 +20,7 @@ native = pytest.importorskip("baresip._native")
 
 from test_telephony_gates import capture_sip_trace, wait_closed
 
-from baresip import Account, CallBusy, CallDeclined, Event, RegistrationError
+from baresip import Account, CallBusy, CallDeclined, Config, Event, RegistrationError
 from baresip.call import CallState
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -35,7 +35,12 @@ CONTAINER = "baresip-bench-freeswitch"
 async def bench_ua(tmp_path):
     runtime = Runtime()
     await runtime.start(
-        f"net_interface 127.0.0.1\naudio_source ausine,440\naudio_player aufile,{tmp_path}/rx.wav\n"
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            audio_source="ausine,440",
+            audio_player=f"aufile,{tmp_path}/rx.wav",
+        )
     )
     ua = await UserAgent.create(runtime, Account(user="1003", password="bench1234", domain=DOMAIN))
     await ua.register()
@@ -110,7 +115,12 @@ async def test_dial_without_registration(tmp_path):
     digest-challenged and answered with the account's credentials."""
     runtime = Runtime()
     await runtime.start(
-        f"net_interface 127.0.0.1\naudio_source ausine,440\naudio_player aufile,{tmp_path}/rx.wav\n"
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            audio_source="ausine,440",
+            audio_player=f"aufile,{tmp_path}/rx.wav",
+        )
     )
     try:
         await runtime.set_sip_trace(True)
