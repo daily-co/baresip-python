@@ -20,7 +20,9 @@ baresip and libre are released in lockstep; always bump both to the same version
    arbitrary commits.
 2. **Bump both together**, to matching versions, in a dedicated pull request that contains
    nothing else.
-3. **The full test suite must pass before merging a bump** — unit and integration. Pay
+3. **The full test suite must pass before merging a bump** — unit and integration. The
+   integration suite is not part of the per-push CI: run the `bench` workflow on the bump's
+   branch, or `make bench-up` and `pytest -m bench tests/integration` locally. Pay
    particular attention to any test that guards against upstream enum or API changes: those
    exist precisely to catch silent breakage a version bump can introduce.
 4. Read the upstream changelogs for both projects before bumping, with special attention to
