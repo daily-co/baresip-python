@@ -45,7 +45,9 @@ publisher becomes the real one when the first upload claims the project name.
 ## Cutting a release
 
 1. Set `__version__` in `src/baresip/__init__.py`, date the version's section in
-   `CHANGELOG.md`, and land those on `main` with CI green.
+   `CHANGELOG.md`, and land those on `main` with CI green. Then run the `bench` workflow
+   on `main` (Actions, `bench`, "Run workflow"): it runs the integration suite against
+   FreeSWITCH, which the per-push CI does not.
 2. Tag that commit and push the tag:
 
    ```
