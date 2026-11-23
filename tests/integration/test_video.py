@@ -21,7 +21,6 @@ import os
 import pytest
 
 native = pytest.importorskip("baresip._native")
-from baresip._native import lib
 from test_telephony_gates import capture_sip_trace
 
 from baresip import Account, Config, Runtime, UserAgent, VideoNotActive
@@ -33,12 +32,14 @@ DOMAIN = f"127.0.0.1:{os.environ.get('BENCH_SIP_PORT', '15060')}"
 
 async def test_video_offer_degrades_gracefully():
     runtime = Runtime()
-    # Raw configuration (the loopback bench needs net_interface pinned),
-    # so the SIP trace is enabled by command below rather than by Config.
     await runtime.start(
-        "net_interface 127.0.0.1\n" + Config(video_size=(320, 240), video_fps=15.0).render()
+        Config(
+            net_interface="127.0.0.1",
+            video_size=(320, 240),
+            video_fps=15.0,
+            sip_trace=True,
+        )
     )
-    await runtime.cmd(lib.BP_CMD_SET_SIP_TRACE, args="1")
     try:
         ua = await UserAgent.create(
             runtime, Account(user="1003", password="bench1234", domain=DOMAIN)
