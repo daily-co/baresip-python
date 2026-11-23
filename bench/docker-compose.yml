@@ -28,8 +28,35 @@ services:
       - "127.0.0.1:${BENCH_TLS_PORT:-15061}:15061/tcp"
       # RTP: must mirror rtp-start-port/rtp-end-port in conf/freeswitch.xml.
       - "127.0.0.1:16384-16403:16384-16403/udp"
+      # The proxy (the kamailio service below shares this network
+      # namespace, so its ports are published here). One port per
+      # Record-Route form; see conf/kamailio.cfg.
+      - "127.0.0.1:15070:15070/udp"
+      - "127.0.0.1:15070-15074:15070-15074/tcp"
     healthcheck:
       test: ["CMD", "fs_cli", "-x", "status"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    stop_grace_period: 5s
+
+  # A SIP proxy that puts itself on a call's route, which FreeSWITCH (a
+  # B2BUA) never does. It shares FreeSWITCH's network namespace: the
+  # Record-Route it inserts must be dialable both from the host and from
+  # FreeSWITCH, and 127.0.0.1:<port> is that only when the two containers
+  # are one host.
+  kamailio:
+    image: ghcr.io/kamailio/kamailio:6.1.5-bookworm
+    container_name: baresip-bench-kamailio
+    network_mode: "service:freeswitch"
+    depends_on:
+      - freeswitch
+    volumes:
+      - ./conf/kamailio.cfg:/etc/kamailio/kamailio.cfg:ro
+      - ./conf/kamailio-tls.cfg:/etc/kamailio/tls.cfg:ro
+      - ./certs:/etc/kamailio/tls:ro
+    healthcheck:
+      test: ["CMD", "kamcmd", "core.uptime"]
       interval: 2s
       timeout: 5s
       retries: 30
