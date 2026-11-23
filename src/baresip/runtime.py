@@ -15,12 +15,14 @@ new process.
 
 import asyncio
 import atexit
+import base64
 import contextlib
 import contextvars
 import errno as _errno
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -28,7 +30,7 @@ import time
 
 from baresip._events import set_sink
 from baresip._native import ffi, lib
-from baresip.config import Config
+from baresip.config import Config, discover_ca, sip_ca_file
 from baresip.errors import BaresipError, CommandQueueFull, CommandTimeout, RuntimeDead
 from baresip.events import Event, StackEvent
 
@@ -60,6 +62,12 @@ _TO_PYTHON_LEVEL = {
 # The stack rejects an empty configuration, so "apply no settings" still
 # needs a line of text.
 _DEFAULT_CONFIG = "# baresip-python defaults\n"
+# Configuration lines by which a caller takes TLS trust into their own hands.
+_TLS_TRUST_LINE = re.compile(r"^[ \t]*sip_(cafile|capath|verify_server)\b", re.MULTILINE)
+# The line the stack logs when a server's certificate fails verification.
+_TLS_VERIFY_ERROR = "tls_verify_handler: error_string = "
+# How long such a line stays attributable to the failure that follows it.
+_TLS_VERIFY_ERROR_TTL = 5.0
 
 
 class Runtime:
@@ -106,6 +114,9 @@ class Runtime:
         self._native_log_level = LOG_LEVELS[native_log_level]
         self._conf_dir: str | None = None
         self._config_text = _DEFAULT_CONFIG
+        self._tls_available = True
+        self._ca_bundle: str | None = None
+        self._tls_verify_error: tuple[float, str] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ctx: contextvars.Context | None = None
         self._thread: threading.Thread | None = None
@@ -181,7 +192,7 @@ class Runtime:
             config = config.render()
         # The parser rejects an empty buffer, so "no settings" still needs
         # something to parse.
-        self._config_text = config or _DEFAULT_CONFIG
+        self._config_text = self._with_tls_trust(config or _DEFAULT_CONFIG)
 
         with Runtime._class_lock:
             if Runtime._process_poisoned:
@@ -314,6 +325,66 @@ class Runtime:
             Runtime._active = None
         logger.info("runtime closed")
 
+    def _with_tls_trust(self, text: str) -> str:
+        """Add the CA certificates TLS servers are verified against.
+
+        The stack verifies a server only when it is given CA certificates,
+        and connects unverified otherwise. So when none are found, TLS is
+        taken out of its transports altogether: nothing can then reach a
+        server it cannot authenticate. Configuration that already sets the
+        stack's CA or verification directives is left as written.
+        """
+        if _TLS_TRUST_LINE.search(text):
+            return text
+        if not text.endswith("\n"):
+            text += "\n"
+        extra = sip_ca_file()
+        found = discover_ca()
+        if found is None and extra is None:
+            self._tls_available = False
+            logger.warning(
+                "no CA certificates found; TLS is disabled. Set SIP_CA_FILE to a CA "
+                "bundle, or install certifi."
+            )
+            return text + "sip_transports UDP,TCP\n"
+        if extra is None:
+            directive, path = found
+            logger.info("verifying TLS servers against %s", path)
+            return text + f"{directive} {path}\n"
+        if found is None:
+            logger.info("verifying TLS servers against %s", extra)
+            return text + f"sip_cafile {extra}\n"
+        directive, path = found
+        logger.info("verifying TLS servers against %s and %s", path, extra)
+        if directive == "sip_capath":
+            return text + f"sip_cafile {extra}\nsip_capath {path}\n"
+        # The stack takes one CA file, so the two are joined into one.
+        fd, self._ca_bundle = tempfile.mkstemp(prefix="baresip-ca-", suffix=".pem")
+        with os.fdopen(fd, "wb") as bundle:
+            for part in (path, extra):
+                with open(part, "rb") as source:
+                    bundle.write(source.read().rstrip() + b"\n")
+        return text + f"sip_cafile {self._ca_bundle}\n"
+
+    @property
+    def tls_available(self) -> bool:
+        """False when no CA certificates were found and TLS is disabled."""
+        return self._tls_available
+
+    def tls_verify_error(self) -> str | None:
+        """Why the stack last rejected a server certificate, if just now.
+
+        The stack reports a failed verification as a bare protocol error
+        on the request, and the reason only in its log; this is that
+        reason (e.g. "self-signed certificate", "hostname mismatch") while
+        it is recent enough to belong to the failure at hand. None when the
+        native log level filters warnings out.
+        """
+        seen = self._tls_verify_error
+        if seen is None or time.monotonic() - seen[0] > _TLS_VERIFY_ERROR_TTL:
+            return None
+        return seen[1]
+
     def _drain_native_log(self) -> None:
         """LOG THREAD. Collect captured lines until the capture is stopped.
 
@@ -339,6 +410,9 @@ class Runtime:
             # Bytes off the network reach us here, so neither valid
             # UTF-8 nor the absence of NULs can be assumed.
             text = ffi.buffer(rec.msg, rec.len)[:].decode("utf-8", "replace")
+            _, found, reason = text.partition(_TLS_VERIFY_ERROR)
+            if found:
+                self._tls_verify_error = (time.monotonic(), reason.strip())
             target.log(_TO_PYTHON_LEVEL.get(rec.level, logging.INFO), "%s", text)
         except Exception:
             # A logging handler that raises must not end log capture.
@@ -356,6 +430,11 @@ class Runtime:
     def _remove_conf_dir(self) -> None:
         """Discard the stack's private directory, unless the stack is still
         standing — a wedged SIP thread may still be reading from it."""
+        # The joined CA file is read once, when the stack starts.
+        if self._ca_bundle is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(self._ca_bundle)
+            self._ca_bundle = None
         if self._conf_dir is None:
             return
         if not self._stack_down.is_set() and self._thread is not None and self._thread.is_alive():
@@ -663,6 +742,7 @@ class Runtime:
             to=data.get("to"),
             headers=data.get("headers", {}),
             stats=data.get("stats", {}),
+            body=base64.b64decode(data["body"]) if data.get("body") else b"",
             truncated=data.get("truncated", False),
         )
         for listener in list(self._listeners):

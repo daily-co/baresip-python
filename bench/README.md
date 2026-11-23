@@ -2,7 +2,9 @@
 
 A disposable, localhost-only FreeSWITCH instance that integration tests (and humans) can
 register against and call. It is the standing SIP peer for everything the unit suite cannot
-cover: registration, real calls, RTP.
+cover: registration, real calls, RTP. Beside it runs a SIP proxy (Kamailio), for what a switch
+cannot show: how an endpoint behaves once a proxy has put itself on a call's route (see
+[The proxy](#the-proxy)).
 
 ## Security posture — read this first
 
@@ -55,6 +57,36 @@ call is rejected immediately, the client is still offering ICE — some clients 
 per-account setting that overrides the global one; change it and re-register. Hearing yourself back proves
 registration, both call directions of signaling, and RTP both ways through Docker's port
 forwarding. `9664` should play a steady beeping tone.
+
+## The proxy
+
+FreeSWITCH ends each call leg itself and never adds a Record-Route, so nothing sent inside a
+call through it is ever routed. The proxy does the opposite: it registers endpoints, relays
+calls between them, and Record-Routes every one. From then on the ACK, a hold, a transfer
+request and the hang-up all go to the proxy's route address, not to the peer.
+
+Register at `127.0.0.1:15070` (no password is asked), and place the call to the port that
+gives the route form you want:
+
+| Call enters on | Record-Route the call gets (top entry first) |
+|---|---|
+| `15070` (UDP/TCP) | `<sip:127.0.0.1:15070;lr>` |
+| `15071` (TLS) | `<sip:127.0.0.1:15070;lr>`, `<sip:127.0.0.1:15071;transport=tls;lr>` |
+| `15072` (TLS) | `<sips:127.0.0.1:15072;lr>` |
+| `15073` (TLS) | `<sips:localhost:15073;lr>` |
+| `15074` (TLS) | `<sip:127.0.0.1:15070;lr>`, `<sips:127.0.0.1:15074;lr>` |
+
+The answering side takes the top entry as its next hop, the caller the bottom one. The `sips:`
+forms are what Flexisip (sip.linphone.org) sends. The proxy reaches an endpoint the way it
+registered, relays only between registered endpoints (not to FreeSWITCH), and shares
+FreeSWITCH's network namespace, which is why its ports are published on that service. Its TLS
+certificate is the bench's own (`bench/certs/cert.pem`). `make bench-proxy-logs` follows its
+log. Configuration: `conf/kamailio.cfg`.
+
+Because the proxy lives in FreeSWITCH's network namespace, restarting the FreeSWITCH container
+on its own leaves the proxy running without a network, and Docker still reports it healthy.
+Restart it too (`docker restart baresip-bench-kamailio`); the proxy tests do so themselves when
+they find it unreachable.
 
 ## Driving the switch from tests
 

@@ -18,9 +18,9 @@
 #   test-tsan - run the thread-boundary test scope under TSan
 #
 # Bench (local FreeSWITCH in docker, see bench/README.md):
-#   bench-up / bench-logs / bench-down
+#   bench-up / bench-logs / bench-proxy-logs / bench-down
 
-.PHONY: native ext ext-san ext-tsan test test-san test-tsan check format bench-up bench-logs bench-down
+.PHONY: native ext ext-san ext-tsan test test-san test-tsan check format bench-up bench-logs bench-proxy-logs bench-down
 
 format:
 	uv run ruff format src scripts tests
@@ -127,6 +127,9 @@ bench-up: bench/certs/wss.pem
 # the real log is the file mod_logfile writes.
 bench-logs:
 	docker exec baresip-bench-freeswitch tail -F /var/log/freeswitch/freeswitch.log
+
+bench-proxy-logs:
+	docker logs -f baresip-bench-kamailio
 
 bench-down:
 	docker compose -f bench/docker-compose.yml down

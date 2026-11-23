@@ -24,11 +24,16 @@ code, for two reasons:
   The checks are decision-level (what did cmake enable, what do our link lines
   contain), never filesystem-level: whatever is installed on the machine is
   irrelevant and must stay that way.
+
+A library with patches under ``third_party/patches/<library>/`` is built from a
+staged copy with the patches applied, so the submodule checkout itself is never
+modified (see docs/UPGRADING.md, "Carried patches").
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import platform
 import re as regex
@@ -38,6 +43,9 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+#: Patches carried on top of the pinned submodules, one directory per library.
+PATCHES_DIR = REPO_ROOT / "third_party" / "patches"
 
 #: The default module set. Every module here is pure mechanism: codecs,
 #: media encryption, NAT traversal, and audio drivers that do nothing until
@@ -206,6 +214,85 @@ def _gpl_notice(modules: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Carried patches
+# ---------------------------------------------------------------------------
+
+#: Left out of a staged copy: git's own files and the in-tree build directory.
+_UNSTAGED = (".git", "build")
+_STAMP = ".patched"
+
+
+def discover_patches(library: str, patches_dir: Path = PATCHES_DIR) -> list[Path]:
+    """The patches carried for ``library``, in the order they apply."""
+    return sorted((patches_dir / library).glob("*.patch"))
+
+
+def patch_stamp(source: Path, patches: list[Path]) -> str:
+    """Identify one source tree with one set of patches.
+
+    The stamp changes when a patch is added, removed or edited, and when
+    the source tree does (a submodule bump rewrites its files), so a
+    staged copy is rebuilt exactly when it has gone stale.
+    """
+    digest = hashlib.sha256()
+    for patch in patches:
+        digest.update(patch.name.encode())
+        digest.update(patch.read_bytes())
+    for path in sorted(source.rglob("*")):
+        relative = path.relative_to(source)
+        if relative.parts[0] in _UNSTAGED or not path.is_file():
+            continue
+        stat = path.stat()
+        digest.update(f"{relative}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
+    return digest.hexdigest()
+
+
+def _patch_command(patch: Path, *, reverse_check: bool = False) -> list[str]:
+    """The command that applies ``patch`` (or checks that it is applied)."""
+    if shutil.which("git"):
+        check = ["--check", "--reverse"] if reverse_check else []
+        return ["git", "apply", "--whitespace=nowarn", *check, str(patch)]
+    if shutil.which("patch"):
+        check = ["--dry-run", "-R"] if reverse_check else []
+        return ["patch", "-p1", "--fuzz=0", "--silent", *check, "-i", str(patch)]
+    raise SystemExit("build_native: applying patches needs git or patch on PATH")
+
+
+def stage_patched(source: Path, patches: list[Path], dest: Path) -> Path:
+    """Copy ``source`` to ``dest`` with ``patches`` applied; return ``dest``.
+
+    A copy that is already current is reused, so incremental builds keep
+    working. Every patch is checked to be present afterwards: a patch
+    that applies nothing must not pass for one that applied.
+    """
+    stamp = patch_stamp(source, patches)
+    stamp_file = dest / _STAMP
+    if stamp_file.is_file() and stamp_file.read_text() == stamp:
+        return dest
+
+    shutil.rmtree(dest, ignore_errors=True)
+    shutil.copytree(source, dest, ignore=shutil.ignore_patterns(*_UNSTAGED), symlinks=True)
+    # Inside this repository git would otherwise resolve the patch's
+    # paths against the enclosing work tree, find none of them under
+    # the current directory, and succeed having applied nothing.
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(dest.parent)}
+    for patch in patches:
+        for reverse_check in (False, True):
+            cmd = _patch_command(patch, reverse_check=reverse_check)
+            print(f"+ {' '.join(cmd)}", file=sys.stderr)
+            proc = subprocess.run(
+                cmd, cwd=dest, env=env, capture_output=True, text=True, check=False
+            )
+            if proc.returncode != 0:
+                what = "is not present after applying" if reverse_check else "does not apply"
+                raise SystemExit(
+                    f"build_native: {patch.name} {what} to {source}:\n{proc.stdout}{proc.stderr}"
+                )
+    stamp_file.write_text(stamp)
+    return dest
+
+
+# ---------------------------------------------------------------------------
 # Build orchestration
 # ---------------------------------------------------------------------------
 
@@ -255,6 +342,11 @@ def build(
     jobs = jobs or os.cpu_count() or 4
     prefix = prefix.resolve()
     re_src = (local_re or REPO_ROOT / "third_party" / "re").resolve()
+    re_patches = discover_patches("re")
+    if local_re and re_patches:
+        print(f"build_native: {local_re} is built as given; carried patches are not applied")
+    elif re_patches:
+        re_src = stage_patched(re_src, re_patches, prefix / "src" / "re")
     baresip_src = (local_baresip or REPO_ROOT / "third_party" / "baresip").resolve()
 
     extras = {m for m in extra_modules.replace(",", ";").split(";") if m}

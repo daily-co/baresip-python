@@ -14,7 +14,9 @@ the underlying parsers would misread is rejected with ValueError where the
 mistake was made, instead of surfacing as a protocol failure later.
 """
 
+import os
 import re
+import ssl
 import uuid
 from dataclasses import dataclass
 from typing import Literal
@@ -24,9 +26,74 @@ LOG_LEVEL_NAMES = ("debug", "info", "warning", "error")
 
 _TRANSPORTS = ("udp", "tcp", "tls")
 _DTMF_MODES = ("rtpevent", "info", "auto")
+#: The values of :attr:`Account.media_encryption`.
+MEDIA_ENCRYPTION_NONE = "none"
+MEDIA_ENCRYPTION_SRTP = "srtp"
+# FIXME: DTLS-SRTP has no value here; it is reachable only as a raw
+# ``mediaenc=dtls_srtp`` in ``extra_params``, and an incoming DTLS-SRTP
+# offer is not followed.
+_MEDIA_ENCRYPTIONS = (MEDIA_ENCRYPTION_NONE, MEDIA_ENCRYPTION_SRTP)
+# The stack's account mode for mandatory SRTP with SDES keys.
+_STACK_SRTP_MODE = "srtp-mand"
 
 # RFC 7230 token characters: what a header name may consist of.
 _HEADER_NAME = re.compile(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+")
+
+
+def sip_ca_file() -> str | None:
+    """The CA file ``SIP_CA_FILE`` names, trusted for SIP in addition.
+
+    For a server whose CA is private: the file (PEM, one certificate or
+    several) is trusted alongside the CA certificates :func:`discover_ca`
+    finds, and by the SIP stack alone, so nothing else in the process
+    comes to trust it and public servers keep verifying.
+
+    Raises:
+        ValueError: the variable is set but does not name a file.
+    """
+    path = os.environ.get("SIP_CA_FILE")
+    if not path:
+        return None
+    if not os.path.isfile(path):
+        raise ValueError(f"SIP_CA_FILE does not name a file: {path!r}")
+    return path
+
+
+def discover_ca() -> tuple[str, str] | None:
+    """Find the CA certificates TLS servers are verified against.
+
+    The stack trusts only what it is handed, so the bundle is looked up
+    where TLS clients conventionally find theirs, first hit wins:
+    ``SSL_CERT_FILE``, ``SSL_CERT_DIR``, the file and then the directory
+    Python's ``ssl`` module reports for this platform, and ``certifi``
+    when it is installed.
+
+    Returns:
+        ``("sip_cafile" | "sip_capath", path)`` naming the stack directive
+        and its value, or None when no CA certificates were found.
+    """
+
+    def usable_dir(path: str | None) -> bool:
+        try:
+            return bool(path) and os.path.isdir(path) and any(os.scandir(path))
+        except OSError:
+            return False
+
+    paths = ssl.get_default_verify_paths()
+    for cafile, capath in (
+        (os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_CERT_DIR")),
+        (paths.cafile, paths.capath),
+    ):
+        if cafile and os.path.isfile(cafile):
+            return "sip_cafile", cafile
+        if usable_dir(capath):
+            return "sip_capath", capath
+    try:
+        import certifi
+    except ImportError:
+        return None
+    cafile = certifi.where()
+    return ("sip_cafile", cafile) if os.path.isfile(cafile) else None
 
 
 def _reject_chars(field: str, value: str, deny: str = "", *, allow_space: bool = False) -> None:
@@ -66,6 +133,22 @@ class Account:
             with a native warning.
         dtmf_mode: How DTMF is sent: RTP telephone-events ("rtpevent"),
             SIP INFO ("info"), or per-call automatic selection ("auto").
+        media_encryption: Whether call audio and video are encrypted.
+
+            - ``"none"``: calls placed are unencrypted. Calls received
+              follow the caller: unencrypted, or SRTP when the caller
+              offers it, including a caller that offers both.
+            - ``"srtp"``: every call is encrypted with SRTP, its keys
+              exchanged in the call setup (SDES). A received call that
+              offers no SRTP is refused with 488 and never reaches the
+              application. The keys are only as private as the
+              signalling that carries them, so pair it with
+              ``transport="tls"``.
+
+            :attr:`Call.media_encrypted <baresip.call.Call.media_encrypted>`
+            reports what a call ended up with. A ``mediaenc=`` entry in
+            ``extra_params`` selects the stack's mode directly and takes
+            the place of this field.
         auth_user: Digest-authentication username, for services whose
             credential store keys it differently from ``user``
             (credential-list trunks, for example). None authenticates as
@@ -94,6 +177,7 @@ class Account:
     transport: Literal["udp", "tcp", "tls"] = "udp"
     audio_codecs: tuple[str, ...] = ("pcmu", "pcma")
     dtmf_mode: Literal["rtpevent", "info", "auto"] = "rtpevent"
+    media_encryption: Literal["none", "srtp"] = MEDIA_ENCRYPTION_NONE
     auth_user: str | None = None
     extra_params: tuple[str, ...] = ()
 
@@ -124,6 +208,11 @@ class Account:
             _reject_chars("audio_codecs", codec, ',;"')
         if self.dtmf_mode not in _DTMF_MODES:
             raise ValueError(f"dtmf_mode must be one of {_DTMF_MODES}, got {self.dtmf_mode!r}")
+        if self.media_encryption not in _MEDIA_ENCRYPTIONS:
+            raise ValueError(
+                f"media_encryption must be one of {_MEDIA_ENCRYPTIONS}, "
+                f"got {self.media_encryption!r}"
+            )
         if self.auth_user is not None:
             if not self.auth_user:
                 raise ValueError("auth_user must not be empty; use None to authenticate as user")
@@ -155,8 +244,20 @@ class Account:
             if not uri.startswith(("sip:", "sips:")):
                 uri = f"sip:{uri}"
             params.append(f'outbound="{uri}"')
+        if self.requires_srtp:
+            params.append(f"mediaenc={_STACK_SRTP_MODE}")
         params.extend(self.extra_params)
         return f"<sip:{self.user}@{self.domain};transport={self.transport}>;" + ";".join(params)
+
+    @property
+    def raw_media_encryption(self) -> bool:
+        """True when ``extra_params`` selects the stack's encryption mode itself."""
+        return any(param.startswith("mediaenc=") for param in self.extra_params)
+
+    @property
+    def requires_srtp(self) -> bool:
+        """True when ``media_encryption`` makes SRTP mandatory for this account."""
+        return self.media_encryption == MEDIA_ENCRYPTION_SRTP and not self.raw_media_encryption
 
     def __repr__(self) -> str:
         password = "***" if self.password else ""
@@ -165,7 +266,7 @@ class Account:
             f"password={password!r}, registrar={self.registrar!r}, "
             f"reg_interval={self.reg_interval!r}, transport={self.transport!r}, "
             f"audio_codecs={self.audio_codecs!r}, dtmf_mode={self.dtmf_mode!r}, "
-            f"auth_user={self.auth_user!r})"
+            f"media_encryption={self.media_encryption!r}, auth_user={self.auth_user!r})"
         )
 
 

@@ -6,7 +6,43 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 
 ## [0.7.0] - 2026-11-21
 
+### Added
+
+- `Account(media_encryption="none" | "srtp")`: `"srtp"` encrypts every call
+  with SRTP (SDES keys) and refuses a received call that offers none.
+  `Call.media_encrypted` reports whether a call's audio is encrypted.
+- `Call.reject(status=486, reason=None, headers=None)`: a refusal carries the
+  status the application chooses (300-699), its standard reason phrase or
+  one supplied, and custom headers. `Call.hangup(headers=None)`: custom
+  headers on the BYE, or on the rejection of a call not yet answered. With no
+  arguments both behave as before.
+- `Call.on_info` / `Call.off_info` and `InfoEvent`: a SIP INFO request
+  received on a call is delivered with its content type and raw body. DTMF
+  sent as INFO keeps arriving through `on_dtmf`.
+- `NoCaCertificatesError`: raised for a TLS account or dial target when the
+  runtime found no CA certificates to verify servers with.
+
 ### Changed
+
+- **A received call that offers SRTP is accepted and encrypted** on an account
+  with no encryption configured. Until now it was answered `488 Not
+  Acceptable Here` before the application saw it. When the caller offers both
+  an SRTP and an unencrypted audio section, the SRTP one is taken.
+
+- **A SIP INFO request is answered `200 OK`.** Until now an INFO with a body
+  other than DTMF relay was answered `488 Not Acceptable Here`. A body over
+  8 KiB is still refused with `488`.
+
+- **TLS servers are verified.** A TLS connection now requires the server's
+  certificate to chain to a trusted CA and to name the host connected to;
+  until now no certificate was checked. The CA certificates are found at
+  start: `SSL_CERT_FILE`, `SSL_CERT_DIR`, the platform's locations as
+  Python's `ssl` module reports them, then `certifi` if installed. A server
+  with a private or self-signed certificate needs `SIP_CA_FILE` pointing at
+  its CA, which the SIP stack then trusts in addition. With no CA certificates found, TLS is disabled and UDP and TCP are
+  unaffected. A rejected certificate fails registration with the reason in
+  the error. `sip_cafile`, `sip_capath` or `sip_verify_server` in
+  `extra_config_text` override all of this.
 
 - The bundled baresip and libre move from v4.10.0 to v4.13.0. No API of this
   package changes. What a call can show differently:
@@ -18,6 +54,19 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
     margin, up from two; the fixed buffer is unchanged.
   - The stack no longer reads `audio_buffer_mode` or `audio_silence`; a
     line setting either in `extra_config_text` has no effect.
+
+### Fixed
+
+- Calls through a proxy or to a peer that uses `sips:` addresses now work.
+  A request whose next hop was a `sips:` URI, from a Record-Route (Flexisip,
+  sip.linphone.org) or from the peer's Contact (OpenAI's SIP endpoint), was
+  never sent: a call placed that way did not complete, and a hang-up, hold or
+  transfer did not reach the far end. Such a request now goes over TLS, and
+  `dial("sips:...")` works. The fix is a patch carried on the bundled libre
+  (docs/UPGRADING.md, "Carried patches").
+- A hang-up that cannot be sent, or is sent and not delivered, is logged as
+  a warning on `baresip.native`. It used to fail without a trace, leaving the
+  far end in a call this side had left.
 
 ## [0.6.1] - 2026-11-20
 

@@ -21,11 +21,12 @@ import re
 from typing import ClassVar
 
 from baresip._native import lib
-from baresip.call import Call, CallState, _parse_refer_to
+from baresip.call import Call, CallState, _parse_refer_to, header_lines
 from baresip.config import Account
 from baresip.errors import (
     BaresipError,
     DrainingError,
+    NoCaCertificatesError,
     NoLocalAddressError,
     RegistrationError,
     StaleHandleError,
@@ -40,6 +41,8 @@ _REGISTER_TIMEOUT = 10.0
 
 # regint=0 in an AOR disables registration in the stack.
 _REGINT_ZERO = re.compile(r";regint=0(?:;|$)")
+# An address or target that connects over TLS.
+_TLS_TARGET = re.compile(r"\bsips:|;transport=tls\b", re.IGNORECASE)
 
 _TRANSFER_POLICIES = ("manual", "auto", "reject")
 
@@ -71,6 +74,7 @@ class UserAgent:
         self._handle = handle
         self._registered = False
         self._registration_disabled = False
+        self._tls = False
         self._transfer_policy = "manual"
         self._transfer_call_callbacks: list = []
         self._listeners: dict = {}
@@ -119,6 +123,18 @@ class UserAgent:
                 f"transfer_policy must be one of {_TRANSFER_POLICIES}, got {transfer_policy!r}"
             )
         aor = account.aor() if isinstance(account, Account) else account
+        tls = _TLS_TARGET.search(aor) is not None
+        if tls and not runtime.tls_available:
+            raise NoCaCertificatesError(
+                "the account uses TLS, but no CA certificates were found to verify "
+                "the server with; set SIP_CA_FILE to a CA bundle, or install certifi"
+            )
+        if isinstance(account, Account) and account.requires_srtp and account.transport != "tls":
+            logger.warning(
+                "media_encryption='srtp' with transport=%r: the SRTP keys travel in the "
+                "call setup, unencrypted; use transport='tls' to keep them private",
+                account.transport,
+            )
         _, payload = await runtime.cmd(lib.BP_CMD_UA_ALLOC, args=aor)
         data = json.loads(payload)
         if "error" in data:
@@ -126,6 +142,7 @@ class UserAgent:
             detail = os.strerror(errno) if errno else data["error"]
             raise BaresipError(f"user agent allocation failed: {detail}")
         ua = cls(runtime, data["handle"])
+        ua._tls = tls
         # The stack silently does nothing on ua_register() for such an
         # account, so register() refuses up front instead of timing out.
         # The Account field is authoritative; raw AORs are checked by text.
@@ -169,8 +186,9 @@ class UserAgent:
             except TimeoutError:
                 raise RegistrationError(f"no registration outcome within {timeout:g} s") from None
         except RegistrationError as exc:
+            exc = await self._explain_tls_failure(exc)
             logger.error("registration failed: %s", exc, extra={"ua": self._handle})
-            raise
+            raise exc from None
         finally:
             self._runtime.unsubscribe(listener)
         self._registered = True
@@ -260,6 +278,11 @@ class UserAgent:
         """
         if not uri or any(c in uri for c in "\r\n"):
             raise ValueError("uri must be non-empty and single-line")
+        if _TLS_TARGET.search(uri) and not self._runtime.tls_available:
+            raise NoCaCertificatesError(
+                "the target uses TLS, but no CA certificates were found to verify "
+                "the server with; set SIP_CA_FILE to a CA bundle, or install certifi"
+            )
         if video not in self._VIDEO_DIRS:
             raise ValueError(
                 f"video must be a bool or one of "
@@ -267,13 +290,7 @@ class UserAgent:
             )
         if self._runtime.draining:
             raise DrainingError("runtime is draining; new calls are refused")
-        args = f"{self._handle} {self._VIDEO_DIRS[video]} {uri}"
-        for name, value in (headers or {}).items():
-            if not name or any(c in name for c in "\r\n: "):
-                raise ValueError(f"invalid header name {name!r}")
-            if any(c in str(value) for c in "\r\n"):
-                raise ValueError(f"header {name}: value must be single-line")
-            args += f"\n{name}: {value}"
+        args = f"{self._handle} {self._VIDEO_DIRS[video]} {uri}{header_lines(headers)}"
         ev, payload = await self._runtime.cmd(lib.BP_CMD_UA_CONNECT, args=args)
         if ev == lib.BP_EV_STALE_HANDLE:
             raise StaleHandleError("user agent no longer exists")
@@ -295,6 +312,26 @@ class UserAgent:
             ua_handle=self._handle,
             state=CallState.OUTGOING,
             peer=uri,
+        )
+
+    async def _explain_tls_failure(self, exc: RegistrationError) -> RegistrationError:
+        """Name the certificate problem behind a TLS registration failure.
+
+        The stack reports a rejected certificate as a transport-level
+        protocol error; the reason sits in its log, which a separate
+        thread delivers, hence the short wait.
+        """
+        if not self._tls or exc.status is not None:
+            return exc
+        await asyncio.sleep(0.05)
+        reason = self._runtime.tls_verify_error()
+        if reason is None:
+            return exc
+        return RegistrationError(
+            f"{exc}: the server's certificate was not accepted ({reason}). The "
+            "certificate must chain to a trusted CA and name the host connected to; "
+            "for a private CA, set SIP_CA_FILE to its certificate",
+            reason=reason,
         )
 
     def _registration_outcome(self, failure: str):

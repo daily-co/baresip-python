@@ -20,10 +20,9 @@ import subprocess
 
 import pytest
 
-native = pytest.importorskip("baresip._native")
-lib = native.lib
+pytest.importorskip("baresip._native")
 
-from baresip import Account, Event, StaleHandleError
+from baresip import Account, Config, Event, StaleHandleError
 from baresip.call import Call, CallState
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -67,15 +66,16 @@ async def bench_ua(tmp_path):
     # otherwise the LAN address wins and calls need a route baresip
     # refuses to build toward a loopback registrar.
     await runtime.start(
-        "net_interface 127.0.0.1\n"
-        # ausine's "device" is the tone frequency; without one it inherits
-        # the platform default device string and refuses to start.
-        f"audio_source ausine,440\naudio_player aufile,{tmp_path}/rx.wav\n"
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            # ausine's "device" is the tone frequency; without one it inherits
+            # the platform default device string and refuses to start.
+            audio_source="ausine,440",
+            audio_player=f"aufile,{tmp_path}/rx.wav",
+            expose_headers=("X-Customer-Id",),
+        )
     )
-    # The raw-text config path skips Config's post-handshake commands, so
-    # set the header allowlist directly — before the UA exists, since the
-    # capture filter is installed at allocation.
-    await runtime.cmd(lib.BP_CMD_SET_EXPOSE_HEADERS, args="X-Customer-Id")
     ua = await UserAgent.create(runtime, Account(user="1003", password="bench1234", domain=DOMAIN))
     await ua.register()
     incoming: asyncio.Queue = asyncio.Queue()

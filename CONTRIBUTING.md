@@ -35,9 +35,12 @@ Every change must pass before it lands:
 
 ## Ground rules
 
-- **The vendored libre/libbaresip stay unmodified.** A fix that belongs in the
-  stack goes upstream (https://github.com/baresip/baresip), never as a local
-  patch; the binding picks it up through a submodule bump.
+- **The vendored libre/libbaresip checkouts stay unmodified.** A fix that
+  belongs in the stack goes upstream (https://github.com/baresip/baresip), and
+  the binding picks it up through a submodule bump. A fix upstream has declined
+  or not yet released may be carried as a patch file under
+  `third_party/patches/`, applied by the build; see "Carried patches" in
+  docs/UPGRADING.md before adding one.
 - **No GPL code in published binaries.** The build enforces this
   (`scripts/build_native.py` audits modules and link lines); don't fight it.
 - Public API carries Google-style docstrings, and breaking changes are called

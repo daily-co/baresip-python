@@ -9,7 +9,8 @@
 Runs in the clean per-wheel test environment cibuildwheel creates: imports
 the installed package (never the source tree), audits the installed
 extension's linkage — the GPL release gate: a wheel that links ffmpeg/x264
-must never be published — and drives one full Runtime start/close cycle.
+must never be published — drives one full Runtime start/close cycle, and
+checks that the bundled libre was built with the carried patches.
 """
 
 from __future__ import annotations
@@ -40,7 +41,34 @@ def main() -> None:
     async def cycle() -> None:
         runtime = baresip.Runtime()
         await runtime.start()
-        await runtime.close()
+        try:
+            await carries_patches(runtime)
+        finally:
+            await runtime.close()
+
+    async def carries_patches(runtime) -> None:
+        """Fail if the wheel's libre lacks the carried sips: patch.
+
+        Unpatched, the stack refuses a sips: target outright ("Function
+        not implemented"). Patched, the dial is accepted and fails later
+        on its own, nothing listening at the address.
+        """
+        account = baresip.Account(user="smoke", password="", domain="smoke.invalid", reg_interval=0)
+        ua = await baresip.UserAgent.create(runtime, account)
+        try:
+            # TEST-NET-1: routable in form, answered by nobody.
+            call = await ua.dial("sips:smoke@192.0.2.1:9")
+        except (baresip.NoCaCertificatesError, baresip.NoLocalAddressError) as error:
+            print(f"wheel_smoke: the sips: check was skipped ({type(error).__name__})")
+            return
+        except baresip.BaresipError as error:
+            if "not implemented" in str(error).lower():
+                raise SystemExit(
+                    "wheel_smoke: the bundled libre refuses a sips: target; "
+                    "it was built without third_party/patches"
+                ) from None
+            return
+        await call.hangup()
 
     asyncio.run(cycle())
     print("wheel_smoke: OK")

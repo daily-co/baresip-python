@@ -80,6 +80,9 @@ class Event(IntEnum):
     #: A call's audio is being damaged by the application's pacing;
     #: see :meth:`Call.on_audio_warning <baresip.call.Call.on_audio_warning>`.
     AUDIO_WARNING = 900
+    #: A SIP INFO request arrived on a call;
+    #: see :meth:`Call.on_info <baresip.call.Call.on_info>`.
+    CALL_INFO = 901
 
 
 @dataclass(frozen=True)
@@ -109,6 +112,8 @@ class StackEvent:
         stats: Media statistics, riding ``CALL_RTCP`` and ``CALL_CLOSED``
             events; empty on everything else. The typed view is
             :class:`~baresip.stats.CallStats`.
+        body: The body of a SIP INFO request, on ``CALL_INFO`` events
+            (``text`` then holds its content type); empty otherwise.
         truncated: True when any value was cut to fit its size cap.
     """
 
@@ -123,4 +128,5 @@ class StackEvent:
     to: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     stats: dict = field(default_factory=dict)
+    body: bytes = b""
     truncated: bool = False
