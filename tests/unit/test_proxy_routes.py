@@ -26,7 +26,7 @@ native = pytest.importorskip("baresip._native")
 
 from sip_proxy import SipProxy
 
-from baresip import Account, BaresipError, CallState, Config, Event, Runtime, UserAgent
+from baresip import Account, CallState, Config, Event, Runtime, UserAgent
 
 # A closed runtime's SIP socket lingers in-process; sequential tests
 # each take a fresh port.
@@ -130,18 +130,6 @@ async def routed(certificate, monkeypatch):
         await proxy.close()
 
 
-async def unhurried(change) -> None:
-    """Hold or resume, waiting out a renegotiation that is still in flight."""
-    for _ in range(40):
-        try:
-            return await change()
-        except BaresipError as error:
-            if "in flight" not in str(error):
-                raise
-            await asyncio.sleep(0.05)
-    await change()
-
-
 def closed(call) -> asyncio.Future:
     """A future resolved when the call is closed."""
     future = asyncio.get_running_loop().create_future()
@@ -186,18 +174,15 @@ async def test_a_hold_from_the_answering_side_arrives(routed, form):
     placed, received, _proxy = await routed(form)
     await placed.wait_established(timeout=5)
     await received.wait_established(timeout=5)
-    # Both sides renegotiate once on their own just after the call is
-    # up; a hold sent into that would collide with it.
-    await asyncio.sleep(0.6)
 
-    await unhurried(received.hold)
+    await received.hold()
     for _ in range(40):
         if placed.remote_on_hold:
             break
         await asyncio.sleep(0.05)
     assert placed.remote_on_hold
 
-    await unhurried(received.resume)
+    await received.resume()
     for _ in range(40):
         if not placed.remote_on_hold:
             break
