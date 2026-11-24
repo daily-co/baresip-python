@@ -16,6 +16,11 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   one supplied, and custom headers. `Call.hangup(headers=None)`: custom
   headers on the BYE, or on the rejection of a call not yet answered. With no
   arguments both behave as before.
+- `Call.transfer(uri, headers=None)`: context for the party a transfer calls,
+  such as `User-to-User`, attached to the transfer target. A peer's transfer
+  request exposes the context of its target as `TransferRequest.headers`, and
+  `Call.accept_transfer(headers=None)` sets it on the call it places, with
+  the headers given added to it.
 - `Call.on_info` / `Call.off_info` and `InfoEvent`: a SIP INFO request
   received on a call is delivered with its content type and raw body. DTMF
   sent as INFO keeps arriving through `on_dtmf`.
@@ -28,6 +33,14 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   with no encryption configured. Until now it was answered `488 Not
   Acceptable Here` before the application saw it. When the caller offers both
   an SRTP and an unencrypted audio section, the SRTP one is taken.
+
+- **A transfer target is sent in angle brackets, and an accepted transfer
+  carries the target's headers.** `Call.transfer` encloses a `sip:` or
+  `sips:` target in angle brackets, which an address with parameters or
+  attached headers needs to be read correctly. A call placed for a peer's
+  transfer request, by `accept_transfer` or by the `"auto"` transfer
+  policy, now carries the headers attached to the target; until now they
+  were discarded. Headers that define the call itself are left out.
 
 - **A SIP INFO request is answered `200 OK`.** Until now an INFO with a body
   other than DTMF relay was answered `488 Not Acceptable Here`. A body over

@@ -1331,7 +1331,25 @@ static void cmd_handler(int id, void *data, void *arg)
         }
         while (end && *end == ' ')
             end++;
-        int cerr = (end && *end) ? call_transfer(call, end) : EINVAL;
+        /* A second line holds headers to attach to a target given as a
+         * bare user part: the target is completed against the account as
+         * the stack would, here, so they have an address to attach to. */
+        char *attached = end ? strchr(end, '\n') : NULL;
+        char *target = NULL;
+        int cerr = (end && *end) ? 0 : EINVAL;
+
+        if (!cerr && attached) {
+            struct uri uri = *account_luri(call_account(call));
+
+            *attached++ = '\0';
+            pl_set_str(&uri.user, end);
+            uri.params = pl_null;
+            uri.headers = pl_null;
+            cerr = re_sdprintf(&target, "<%H?%s>", uri_encode, &uri, attached);
+        }
+        if (!cerr)
+            cerr = call_transfer(call, target ? target : end);
+        mem_deref(target);
 
         if (cerr) {
             char json[64];
@@ -1388,6 +1406,27 @@ static void cmd_handler(int id, void *data, void *arg)
             bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"accept\",\"errno\":22}");
             break;
         }
+        /* "Name: value" lines after the target are headers for the new
+         * call. */
+        struct list hdrs;
+        char *line = strchr(end, '\n');
+
+        list_init(&hdrs);
+        if (line)
+            *line++ = '\0';
+        while (line && *line) {
+            char *next = strchr(line, '\n');
+            char *colon;
+
+            if (next)
+                *next++ = '\0';
+            colon = strstr(line, ": ");
+            if (colon) {
+                *colon = '\0';
+                custom_hdrs_add(&hdrs, line, "%s", colon + 2);
+            }
+            line = next;
+        }
         /* The menu module's recipe: allocate the replacement call with
          * the transferring call as xcall (5th arg) — that linkage is
          * what makes the core report the outcome to the transferor and
@@ -1398,7 +1437,16 @@ static void cmd_handler(int id, void *data, void *arg)
         struct call *call2 = NULL;
         int saved_af;
         bool af_set = dial_af_set(ua, false, &saved_af);
+
+        /* A call takes the account's custom headers when allocated. */
+        if (!list_isempty(&hdrs))
+            ua_set_custom_hdrs(ua, &hdrs);
         int cerr = ua_call_alloc(&call2, ua, VIDMODE_OFF, NULL, call, call_localuri(call), true);
+
+        if (!list_isempty(&hdrs)) {
+            ua_set_custom_hdrs(ua, NULL);
+            list_flush(&hdrs);
+        }
 
         if (af_set)
             (void)net_set_af(baresip_network(), saved_af);

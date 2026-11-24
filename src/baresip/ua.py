@@ -21,7 +21,13 @@ import re
 from typing import ClassVar
 
 from baresip._native import lib
-from baresip.call import Call, CallState, _parse_refer_to, header_lines
+from baresip.call import (
+    Call,
+    CallState,
+    _carried_header_lines,
+    _parse_refer_to,
+    header_lines,
+)
 from baresip.config import Account
 from baresip.errors import (
     BaresipError,
@@ -398,7 +404,8 @@ class UserAgent:
                 await self._runtime.cmd(lib.BP_CMD_CALL_TRANSFER_REJECT, args=f"{event.call} 501")
                 return
             ev, payload = await self._runtime.cmd(
-                lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{event.call} {request.raw}"
+                lib.BP_CMD_CALL_TRANSFER_ACCEPT,
+                args=f"{event.call} {request.raw}{_carried_header_lines(request, None)}",
             )
             data = json.loads(payload) if payload else {}
             if ev == lib.BP_EV_STALE_HANDLE or "error" in data:
