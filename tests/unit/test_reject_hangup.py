@@ -39,7 +39,11 @@ _PORTS = itertools.count(5485)
 
 
 class Received(logging.Handler):
-    """The SIP messages the stack received, as its trace logged them."""
+    """The SIP messages the stack received, as its trace logged them.
+
+    The trace is delivered by the log thread, apart from call events, so
+    a message can be logged after the call event it caused.
+    """
 
     def __init__(self):
         super().__init__()
@@ -50,9 +54,17 @@ class Received(logging.Handler):
         if message.startswith("RX "):
             self.messages.append(message.split("\n", 1)[-1])
 
-    def first(self, start: str) -> str:
-        """The first received message whose start line begins with ``start``."""
-        return next((m for m in self.messages if m.startswith(start)), "")
+    async def first(self, start: str, timeout: float = 3.0) -> str:
+        """The first received message whose start line begins with ``start``.
+
+        Waits for it to be logged; empty when none is within ``timeout``.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            found = next((m for m in self.messages if m.startswith(start)), "")
+            if found or asyncio.get_running_loop().time() >= deadline:
+                return found
+            await asyncio.sleep(0.01)
 
 
 @pytest.fixture
@@ -160,7 +172,7 @@ async def test_reject_headers_arrive_as_written(pair):
 
     with pytest.raises(CallFailed):
         await placed.wait_established(timeout=5)
-    response = trace.first("SIP/2.0 503")
+    response = await trace.first("SIP/2.0 503")
     assert "\r\nRetry-After: 30\r\n" in response
     assert "\r\nX-Note: 100% %s %n %H\r\n" in response
     assert response.count("Content-Length:") == 1
@@ -173,7 +185,7 @@ async def test_hangup_headers_ride_the_bye(pair):
     await received.hangup(headers={"Reason": 'Q.850;cause=16;text="resolved"', "X-Queue": "sales"})
 
     await until_closed(placed)
-    bye = trace.first("BYE ")
+    bye = await trace.first("BYE ")
     assert '\r\nReason: Q.850;cause=16;text="resolved"\r\n' in bye
     assert "\r\nX-Queue: sales\r\n" in bye
 
@@ -185,7 +197,9 @@ async def test_hangup_without_headers_sends_a_bare_bye(pair):
     await received.hangup()
 
     await until_closed(placed)
-    assert "X-" not in trace.first("BYE ") and "Reason:" not in trace.first("BYE ")
+    bye = await trace.first("BYE ")
+    assert bye
+    assert "X-" not in bye and "Reason:" not in bye
 
 
 async def test_hangup_headers_ride_the_rejection_of_an_unanswered_call(pair):
@@ -196,7 +210,7 @@ async def test_hangup_headers_ride_the_rejection_of_an_unanswered_call(pair):
 
     with pytest.raises(CallBusy):
         await placed.wait_established(timeout=5)
-    assert "\r\nX-Disposition: no-agent\r\n" in trace.first("SIP/2.0 486")
+    assert "\r\nX-Disposition: no-agent\r\n" in await trace.first("SIP/2.0 486")
 
 
 async def test_hanging_up_an_unanswered_outgoing_call_cancels_it(pair):
@@ -206,8 +220,9 @@ async def test_hanging_up_an_unanswered_outgoing_call_cancels_it(pair):
     await placed.hangup(headers={"X-Why": "changed my mind"})
 
     await until_closed(received)
-    assert trace.first("CANCEL ")
-    assert "X-Why" not in trace.first("CANCEL ")  # a cancellation carries no headers
+    cancel = await trace.first("CANCEL ")
+    assert cancel
+    assert "X-Why" not in cancel  # a cancellation carries no headers
 
 
 async def test_reject_on_an_answered_call_ends_it(pair):
@@ -217,7 +232,7 @@ async def test_reject_on_an_answered_call_ends_it(pair):
     await received.reject(status=603)
 
     await until_closed(placed)
-    assert trace.first("BYE ")
+    assert await trace.first("BYE ")
 
 
 @pytest.mark.parametrize("status", [0, 180, 200, 299, 700])

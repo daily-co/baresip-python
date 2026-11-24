@@ -40,9 +40,10 @@ _PORTS = itertools.count(5385)
 # bridges two transports inserts one entry per side; one that insists on
 # TLS inserts a single ``sips:`` entry for both.
 #
-# Every entry names the proxy by address. A route by host name depends on
-# how the machine resolves it, which the stack does with its own resolver
-# and not the system's; that form is covered against the bench's proxy.
+# The stack resolves a host name with its own resolver, which asks the
+# machine's DNS server and reads no hosts file, so "localhost" resolves
+# only where that server answers for it. The runtime here is told to use
+# the system resolver, which always does.
 FORMS = {
     "sip over udp": ("udp", ("<sip:127.0.0.1:{udp};lr>",), None),
     "sip, one entry per side": (
@@ -51,6 +52,7 @@ FORMS = {
         None,
     ),
     "sips": ("tls", ("<sips:127.0.0.1:{tls};lr>",), None),
+    "sips with a hostname": ("tls", ("<sips:localhost:{tls};lr>",), None),
     "sips, caller on udp": ("udp", ("<sips:127.0.0.1:{tls};lr>",), None),
     "sips for the caller, sip for the answerer": (
         "tls",
@@ -92,7 +94,11 @@ async def routed(certificate, monkeypatch):
     port = next(_PORTS)
     own = f"127.0.0.1:{port}"
     runtime = Runtime()
-    await runtime.start(Config(net_interface="127.0.0.1", extra_config_text=f"sip_listen {own}\n"))
+    await runtime.start(
+        Config(
+            net_interface="127.0.0.1", extra_config_text=f"sip_listen {own}\ndns_getaddrinfo yes\n"
+        )
+    )
     proxies: list[SipProxy] = []
 
     async def connect(form, target: str | None = None, caller_transport: str | None = None):

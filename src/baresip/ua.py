@@ -44,6 +44,9 @@ from baresip.runtime import Runtime
 logger = logging.getLogger("baresip.ua")
 
 _REGISTER_TIMEOUT = 10.0
+# How long a failed TLS registration waits for the log line naming the
+# certificate problem.
+_TLS_REASON_WAIT = 0.25
 
 # regint=0 in an AOR disables registration in the stack.
 _REGINT_ZERO = re.compile(r";regint=0(?:;|$)")
@@ -325,14 +328,15 @@ class UserAgent:
 
         The stack reports a rejected certificate as a transport-level
         protocol error; the reason sits in its log, which a separate
-        thread delivers, hence the short wait.
+        thread delivers, hence the short wait for it.
         """
         if not self._tls or exc.status is not None:
             return exc
-        await asyncio.sleep(0.05)
-        reason = self._runtime.tls_verify_error()
-        if reason is None:
-            return exc
+        deadline = asyncio.get_running_loop().time() + _TLS_REASON_WAIT
+        while (reason := self._runtime.tls_verify_error()) is None:
+            if asyncio.get_running_loop().time() >= deadline:
+                return exc
+            await asyncio.sleep(0.01)
         return RegistrationError(
             f"{exc}: the server's certificate was not accepted ({reason}). The "
             "certificate must chain to a trusted CA and name the host connected to; "

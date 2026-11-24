@@ -85,7 +85,16 @@ def proxy():
 async def runtime(monkeypatch):
     monkeypatch.setenv("SIP_CA_FILE", str(BENCH_CERT))
     rt = Runtime()
-    await rt.start(Config(net_interface="127.0.0.1", max_concurrent_calls=None))
+    # One route names the proxy "localhost". The stack's own resolver asks
+    # the machine's DNS server, which may not answer for that name; the
+    # system resolver always does.
+    await rt.start(
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            extra_config_text="dns_getaddrinfo yes\n",
+        )
+    )
     yield rt
     await rt.close()
 
@@ -134,11 +143,23 @@ def closed(call) -> asyncio.Future:
     return future
 
 
-async def audio_arrives(call) -> bool:
-    """True when decoded audio keeps arriving on the call."""
-    with contextlib.suppress(AudioRestarted):  # the call renegotiates once on its own
-        call.audio.read(1 << 20)
-    call.audio.read(1 << 20)  # drain what has queued so far
+async def audio_arrives(call, timeout: float = 3.0) -> bool:
+    """True when decoded audio arrives on the call and keeps arriving.
+
+    Audio starts a few hundred milliseconds into a call, after the
+    stream's first renegotiation, so the start is waited for.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    started = False
+    while not started and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        with contextlib.suppress(AudioRestarted):  # a renegotiation restarts the stream
+            started = len(call.audio.read(1 << 20)) > 0
+    if not started:
+        return False
+    await asyncio.sleep(0.4)
+    with contextlib.suppress(AudioRestarted):
+        return len(call.audio.read(1 << 20)) > 0
     await asyncio.sleep(0.4)
     return len(call.audio.read(1 << 20)) > 0
 

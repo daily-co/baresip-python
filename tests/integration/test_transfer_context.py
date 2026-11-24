@@ -24,7 +24,7 @@ import pytest
 pytest.importorskip("baresip._native")
 
 from test_proxy_routes import REGISTRAR, proxy  # noqa: F401  (the fixture restarts the proxy)
-from test_telephony_gates import capture_sip_trace
+from test_telephony_gates import bridged, capture_sip_trace
 
 from baresip import Account, CallState, Config
 from baresip.runtime import Runtime
@@ -107,6 +107,7 @@ async def test_the_request_to_freeswitch_carries_the_context_in_its_target(runti
     transferred = await agent(runtime, "1004", DOMAIN, "bench1234")
     placed, received = await call_between(transferor, transferred, f"sip:1004@{DOMAIN}")
 
+    await bridged()
     with capture_sip_trace() as records:
         await placed.transfer(f"sip:9196@{DOMAIN}", headers=CONTEXT)
 

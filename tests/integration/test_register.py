@@ -9,6 +9,7 @@
 Run with: pytest -m bench tests/integration
 """
 
+import asyncio
 import contextvars
 import logging
 import os
@@ -59,6 +60,12 @@ async def test_register_carries_instance_id(caplog):
             ua = await UserAgent.create(rt, bench_account())
             await ua.register()
             await ua.unregister()
+            # The trace is delivered by the log thread, apart from the
+            # registration outcome.
+            for _ in range(300):
+                if "+sip.instance" in caplog.text:
+                    break
+                await asyncio.sleep(0.01)
         assert f'+sip.instance="<urn:uuid:{instance}>"' in caplog.text
     finally:
         await rt.close()

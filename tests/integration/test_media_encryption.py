@@ -24,6 +24,8 @@ import pytest
 
 pytest.importorskip("baresip._native")
 
+from test_telephony_gates import bridged
+
 from baresip import Account, AudioRestarted, CallState, Config
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -79,12 +81,24 @@ async def registered(runtime, media_encryption: str, user: str = "1003") -> User
     return ua
 
 
-async def audio_arrives(call) -> bool:
-    """True when decoded audio keeps arriving on the call."""
-    with contextlib.suppress(AudioRestarted):  # a hold renegotiates the stream
-        call.audio.read(1 << 20)
-    call.audio.read(1 << 20)  # drain what has queued so far
-    await asyncio.sleep(0.5)
+async def audio_arrives(call, timeout: float = 3.0) -> bool:
+    """True when decoded audio arrives on the call and keeps arriving.
+
+    Audio starts a few hundred milliseconds into a call, after the
+    stream's first renegotiation, so the start is waited for.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    started = False
+    while not started and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        with contextlib.suppress(AudioRestarted):  # a renegotiation restarts the stream
+            started = len(call.audio.read(1 << 20)) > 0
+    if not started:
+        return False
+    await asyncio.sleep(0.4)
+    with contextlib.suppress(AudioRestarted):
+        return len(call.audio.read(1 << 20)) > 0
+    await asyncio.sleep(0.4)
     return len(call.audio.read(1 << 20)) > 0
 
 
@@ -174,6 +188,7 @@ async def test_an_encrypted_call_can_be_transferred(runtime):
     assert a_call.media_encrypted
     assert await audio_arrives(a_call)
 
+    await bridged()
     await a_call.transfer(f"sip:9196@{DOMAIN}")
 
     assert a_call.state is CallState.CLOSED

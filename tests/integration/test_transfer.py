@@ -28,7 +28,7 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from test_telephony_gates import fs_cli
+from test_telephony_gates import bridged, fs_cli
 
 from baresip import Account, Config, TransferFailed
 from baresip.call import CallState
@@ -75,6 +75,7 @@ async def test_blind_transfer_repoints_the_far_end_and_closes_our_leg(runtime):
     await a_call.wait_established()
     await b_call.wait_established()
 
+    await bridged()
     await a_call.transfer(f"sip:9196@{DOMAIN}")
 
     # Success IS the closing of our leg; the switch reported the
