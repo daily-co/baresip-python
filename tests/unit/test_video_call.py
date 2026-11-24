@@ -142,18 +142,19 @@ async def test_video_survives_hold_resume(pair):
 
     recovered = None
     deadline = asyncio.get_running_loop().time() + 10
-    while True:
+    while recovered is None or recovered.data[0] <= 150:
+        assert asyncio.get_running_loop().time() < deadline, (
+            "video never recovered after hold/resume"
+        )
         try:
+            # A frame sent before the hold can still be decoded after
+            # the resume; only one of the new frames shows recovery.
             recovered = await pump_until_frame(a_call, b_call, 220, timeout=2.0)
-            break
         except (AssertionError, VideoRestarted):
             # VideoRestarted is the epoch contract doing its job: the
             # renegotiation replaced the streams, and the next operation
             # rebinds. Keep pumping until frames flow again.
-            assert asyncio.get_running_loop().time() < deadline, (
-                "video never recovered after hold/resume"
-            )
-    assert recovered is not None and recovered.data[0] > 150
+            pass
     await a_call.hangup()
 
 
