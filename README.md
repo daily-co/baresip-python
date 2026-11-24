@@ -127,6 +127,15 @@ SIP_CA_FILE=bench/certs/cert.pem uv run python examples/10_encrypted_call.py
 docker exec baresip-bench-freeswitch fs_cli -x "originate {rtp_secure_media=mandatory}user/1001 &echo()"
 ```
 
+**[11 — transfer with context](examples/11_transfer_with_context.py).** A bot hands a caller
+to a human agent and passes what it learned as a `User-to-User` header, so the agent does not
+ask again. It plays the bot, the caller's phone and the agent desk in one process, with no
+server:
+
+```
+uv run python examples/11_transfer_with_context.py
+```
+
 ## Audio and device selection
 
 Audio drivers are chosen when the runtime starts — `Config(audio_source=...,
@@ -161,6 +170,39 @@ Two deliberate absences. The `100 Trying` that answers an incoming INVITE cannot
 custom headers: the stack sends it automatically, before the application ever sees the
 call — and it is a hop-by-hop response, so a header on it would die at the first proxy
 anyway. Nor can the answer (`200 OK`): the stack has no way to add them yet.
+
+## Call context on a transfer
+
+A bot that hands a caller to a human agent or a queue can pass what it learned, so the
+caller is not asked again. The context travels with the transfer, attached to the address
+the far end is told to call:
+
+```python
+await call.transfer(
+    "sip:support@pbx.example.com",
+    headers={"User-to-User": "56a390f3d2b7310023a2;encoding=hex", "X-Case": "1234"},
+)
+```
+
+The far end sets those headers on the call it places, and the party it calls reads them as
+ordinary headers. `User-to-User` is the standard one; contact-center platforms such as
+Genesys and Twilio read it, usually as hex data ending in `;encoding=hex`. The library does
+the escaping the address form needs.
+
+Whether the context arrives is the far end's choice. Our own agents carry it, which the
+test suite checks through a proxy. FreeSWITCH, as the party being transferred, places the
+new call without it unless its dialplan forwards it; other switches and carriers vary.
+
+To receive context, list the header names in `Config(expose_headers=["User-to-User", ...])`;
+they then appear in the incoming call's `headers`, like any exposed header.
+
+When a peer asks one of our calls to transfer, `TransferRequest.headers` holds the context
+attached to its target, and `call.accept_transfer()` sets it on the call it places.
+`accept_transfer(headers={...})` adds headers to it; a name the request also has takes the
+value given, and a value of `None` leaves that header out.
+Headers that define the call itself (From, To, Call-ID, Via, Route, Contact and the like)
+are never taken from a transfer target. Example 11 shows all three parties, and
+[docs/TRANSFER.md](docs/TRANSFER.md) the model behind them.
 
 ## SIP INFO
 

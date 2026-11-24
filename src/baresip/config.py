@@ -301,7 +301,8 @@ class Config:
         expose_headers: Allowlist of SIP header names (an X-/P- custom
             header, typically) whose values event payloads carry when the
             triggering message has them. At most 16 names, each under 64
-            characters.
+            characters. List ``User-to-User`` to receive the context a
+            contact-center platform or a transfer sets on a call.
         native_log_level: Lowest severity captured from the native stack,
             active from its first line: "debug", "info", "warning" or
             "error".

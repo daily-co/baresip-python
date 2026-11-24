@@ -85,7 +85,9 @@
  * in flight. The peer's answer arrives as events. */
 #define BP_CMD_CALL_HOLD 14
 
-/* Blind transfer. Args: "HANDLE URI". Completes when the in-dialog REFER
+/* Blind transfer. Args: "HANDLE URI", or "HANDLE USER\nATTACHED" for a
+ * bare user part with headers to attach (already in escaped
+ * "name=value&..." form). Completes when the in-dialog REFER
  * is issued; the outcome arrives as events — CALL_TRANSFER_FAILED with
  * "CODE reason" text, or, on success, CALL_CLOSED with the stack's exact
  * text "Call transfered" (the transferred call ends; there is no
@@ -103,10 +105,10 @@
 /* Act on a received transfer request (the CALL_TRANSFER event). The
  * stack has already 202-accepted the REFER by the time the event is
  * reported, so these speak through the implicit subscription's NOTIFY
- * sipfrags. ACCEPT args: "HANDLE RAW_REFER_TO" (rest of line) — dials
+ * sipfrags. ACCEPT args: "HANDLE RAW_REFER_TO[\nName: value...]" — dials
  * the target with the xcall linkage so the core ties the original
- * leg's fate to the new call; DONE payload {"handle":N} names the new
- * call. REJECT args: "HANDLE STATUS" — sends the final failing sipfrag
+ * leg's fate to the new call, which carries the header lines given;
+ * DONE payload {"handle":N} names the new call. REJECT args: "HANDLE STATUS" — sends the final failing sipfrag
  * (out-of-range statuses fall back to 603) and the call continues. */
 #define BP_CMD_CALL_TRANSFER_ACCEPT 17
 #define BP_CMD_CALL_TRANSFER_REJECT 18

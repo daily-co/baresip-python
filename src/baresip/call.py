@@ -23,7 +23,8 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+import urllib.parse
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from baresip._native import lib
@@ -125,6 +126,96 @@ def header_lines(headers: dict | None) -> str:
     return lines
 
 
+# Headers that define a call or its message. A transfer target is not
+# allowed to set them on the call placed for it.
+_CALL_DEFINING_HEADERS = frozenset(
+    {
+        "from", "to", "call-id", "cseq", "via", "route", "record-route", "contact",
+        "max-forwards", "content-length", "content-type", "content-disposition",
+        "content-encoding", "f", "t", "i", "v", "m", "l", "c", "e",
+    }
+)  # fmt: skip
+# Characters a header attached to an address carries unescaped (RFC 3261
+# section 19.1.1: unreserved and hnv-unreserved).
+_ADDRESS_HEADER_SAFE = "-_.!~*'()[]/?:+$"
+# The native layer's limit on the header lines of one command.
+_HEADER_LINES_MAX = 2048
+
+
+def _transfer_target(uri: str, headers: dict | None) -> str:
+    """The transfer command's target for ``uri`` with ``headers`` attached.
+
+    A full address is enclosed in angle brackets, which the attached
+    headers and any address parameter need to be read as part of it. A
+    bare user part is returned as given, for the native layer to
+    complete against the account, with the headers to attach on a
+    second line.
+
+    Raises:
+        ValueError: an invalid or call-defining header.
+    """
+    header_lines(headers)
+    for name in headers or {}:
+        if name.lower() in _CALL_DEFINING_HEADERS:
+            raise ValueError(f"header {name} cannot be set by a transfer")
+    attached = "&".join(
+        f"{urllib.parse.quote(name, safe=_ADDRESS_HEADER_SAFE)}="
+        f"{urllib.parse.quote(str(value), safe=_ADDRESS_HEADER_SAFE)}"
+        for name, value in (headers or {}).items()
+    )
+    if uri.startswith("<"):
+        address, closing, rest = uri[1:].partition(">")
+        if not closing:
+            raise ValueError("uri opens an angle bracket and never closes it")
+    elif re.match(r"sips?:", uri, re.IGNORECASE):
+        address, rest = uri, ""
+    else:
+        return f"{uri}\n{attached}" if attached else uri
+    if attached:
+        address += ("&" if "?" in address else "?") + attached
+    return f"<{address}>{rest}"
+
+
+def _carried_header_lines(request: "TransferRequest", headers: dict | None) -> str:
+    """The header lines for the call placed to execute ``request``.
+
+    The call carries the headers attached to the request's target, then
+    ``headers``: a name the request also has takes the given value, and
+    a value of None leaves that header out. The request's headers come
+    from the peer, so one that is call-defining or malformed is left out
+    with a warning; ``headers`` are the application's and are validated.
+
+    Raises:
+        ValueError: an invalid or call-defining header in ``headers``, or
+            headers past the native layer's size limit.
+    """
+    carried: dict[str, tuple[str, object]] = {}
+    for name, value in request.headers.items():
+        try:
+            if name.lower() in _CALL_DEFINING_HEADERS:
+                raise ValueError("call-defining")
+            header_lines({name: value})
+        except ValueError:
+            logger.warning("transfer request: header %r is not carried to the new call", name)
+            continue
+        carried[name.lower()] = (name, value)
+    for name, value in (headers or {}).items():
+        if name.lower() in _CALL_DEFINING_HEADERS:
+            raise ValueError(f"header {name} cannot be set on a transferred call")
+        if value is None:
+            carried.pop(name.lower(), None)
+            continue
+        header_lines({name: value})
+        carried[name.lower()] = (name, value)
+    lines = header_lines(dict(carried.values()))
+    if len(lines) > _HEADER_LINES_MAX:
+        if headers:
+            raise ValueError(f"headers exceed {_HEADER_LINES_MAX} bytes")
+        logger.warning("transfer request: its headers are too long and are not carried")
+        return ""
+    return lines
+
+
 _TRANSFER_TIMEOUT = 60.0
 _DTMF_DIGITS = "0123456789ABCD*#"
 _DTMF_TONE_MS = 100
@@ -151,12 +242,16 @@ class TransferRequest:
             an attended transfer, pointing at an existing dialog.
         method: The requested method, uppercase. "INVITE" (a call) in
             all but exotic uses.
+        headers: The headers attached to the target, by name, unescaped:
+            the context the transferor wants the new call to carry
+            (``User-to-User``, typically). Replaces is not among them.
     """
 
     target: str
     raw: str
     replaces: bool
     method: str
+    headers: dict = field(default_factory=dict)
 
 
 def _parse_refer_to(raw: str) -> TransferRequest:
@@ -171,11 +266,21 @@ def _parse_refer_to(raw: str) -> TransferRequest:
         addr, _, params = value[1:].partition(">")
     else:
         addr, _, params = value.partition(";")
-    target, _, _uri_headers = addr.partition("?")
+    target, _, uri_headers = addr.partition("?")
     match = re.search(r"(?:^|;)\s*method=([^;]+)", params, re.IGNORECASE)
     method = match.group(1).strip().upper() if match else "INVITE"
+    headers = {}
+    for pair in filter(None, uri_headers.split("&")):
+        name, _, value = pair.partition("=")
+        name = urllib.parse.unquote(name)
+        if name.lower() != "replaces":
+            headers[name] = urllib.parse.unquote(value)
     return TransferRequest(
-        target=target.strip(), raw=raw, replaces="replaces=" in addr.lower(), method=method
+        target=target.strip(),
+        raw=raw,
+        replaces="replaces=" in addr.lower(),
+        method=method,
+        headers=headers,
     )
 
 
@@ -735,7 +840,9 @@ class Call:
             )
         self._on_hold = hold
 
-    async def transfer(self, uri: str, *, timeout: float = _TRANSFER_TIMEOUT) -> None:
+    async def transfer(
+        self, uri: str, *, headers: dict | None = None, timeout: float = _TRANSFER_TIMEOUT
+    ) -> None:
         """Blind-transfer the call (REFER) and await the outcome.
 
         Asks the far end to call ``uri`` instead of talking to us. On
@@ -751,11 +858,21 @@ class Call:
         Args:
             uri: The SIP URI the far end should call. A bare user part
                 is completed against the account's domain by the stack.
+            headers: Context for the party the far end calls, such as
+                ``{"User-to-User": "56a3...;encoding=hex"}``. The headers
+                are attached to ``uri``, escaped, for the far end to set
+                on the call it places; whether it does is the far end's
+                choice.
+                The receiving application reads them from the call's
+                headers when its ``Config.expose_headers`` lists them.
             timeout: Seconds to wait for the far end's reported outcome
                 (a peer may accept the REFER and never report).
 
         Raises:
-            ValueError: a URI that cannot travel in a request.
+            ValueError: a URI that cannot travel in a request, a header
+                with an invalid name or value, or one that defines the
+                call itself (From, To, Call-ID, Via, Route, Contact and
+                the like).
             TransferFailed: the far end refused or reported a failing
                 outcome, the call closed without one, or no outcome
                 arrived within ``timeout``.
@@ -765,12 +882,13 @@ class Call:
         """
         if not uri or any(c in uri for c in " \r\n"):
             raise ValueError("uri must be non-empty, single-line, and without spaces")
+        target = _transfer_target(uri, headers)
         if self._state is not CallState.ESTABLISHED:
             raise BaresipError("transfer requires an established call")
         if self._transfer_pending:
             raise BaresipError("a transfer is already in progress on this call")
         await self._execute_transfer(
-            f"{self._handle} {uri}", cmd=lib.BP_CMD_CALL_TRANSFER, timeout=timeout
+            f"{self._handle} {target}", cmd=lib.BP_CMD_CALL_TRANSFER, timeout=timeout
         )
 
     async def attended_transfer(
@@ -847,8 +965,13 @@ class Call:
         if callback in self._transfer_req_listeners:
             self._transfer_req_listeners.remove(callback)
 
-    async def accept_transfer(self) -> "Call":
+    async def accept_transfer(self, *, headers: dict | None = None) -> "Call":
         """Execute the pending transfer request: dial its target.
+
+        The new call carries the headers the transferor attached to the
+        target (:attr:`TransferRequest.headers`), so context such as
+        ``User-to-User`` reaches the party being called. A header that
+        defines the call itself is never carried.
 
         Returns the new outbound call immediately (await its
         :meth:`wait_established` for the outcome). The stack ties this
@@ -857,7 +980,14 @@ class Call:
         the new call fails, the transferor is notified of the failure
         and this call continues.
 
+        Args:
+            headers: Headers to set on the new call in addition to the
+                request's own. A name the request also has takes the
+                value given here; a value of None leaves that header out.
+
         Raises:
+            ValueError: ``headers`` holds an invalid or call-defining
+                header.
             BaresipError: no request is pending, or dialing failed (the
                 transferor is then told with a 500 sipfrag).
             StaleHandleError: the call is already gone.
@@ -865,8 +995,9 @@ class Call:
         request = self._transfer_request
         if request is None:
             raise BaresipError("no transfer request is pending on this call")
+        lines = _carried_header_lines(request, headers)
         ev, payload = await self._runtime.cmd(
-            lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{self._handle} {request.raw}"
+            lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{self._handle} {request.raw}{lines}"
         )
         if ev == lib.BP_EV_STALE_HANDLE:
             raise StaleHandleError("call no longer exists")
