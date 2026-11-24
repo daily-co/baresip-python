@@ -66,7 +66,14 @@ def originate(channel: str, secure: str | None, *, background: bool = True) -> s
 @pytest.fixture
 async def runtime():
     rt = Runtime()
-    await rt.start(Config(net_interface="127.0.0.1", max_concurrent_calls=None))
+    await rt.start(
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            sip_trace=True,
+            native_log_level="debug",
+        )
+    )
     yield rt
     await fs_cli("hupall NORMAL_CLEARING")
     await rt.close()

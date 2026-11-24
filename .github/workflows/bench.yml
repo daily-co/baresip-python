@@ -26,7 +26,7 @@ jobs:
       - run: make native
       - run: make ext
       - run: make bench-up
-      - run: uv run pytest tests/integration -m bench -v
+      - run: uv run pytest tests/integration -m bench -v --log-level=DEBUG
       - name: Collect FreeSWITCH logs
         if: failure()
         run: |
