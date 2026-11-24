@@ -76,6 +76,21 @@ def fs_cli(command: str) -> str:
     ).stdout
 
 
+async def bridged(timeout: float = 5.0) -> None:
+    """Wait until the switch has bridged the legs of the call just set up.
+
+    Both of our legs are established a moment before the switch joins
+    them. A transfer asked for in that moment reaches a leg that is not
+    in a bridge yet, and the switch can leave the transferred leg parked.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if not (await asyncio.to_thread(fs_cli, "show calls count")).strip().startswith("0 "):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("the switch did not bridge the call")
+
+
 async def make_ua(runtime, *, domain: str = DOMAIN, **account_fields) -> UserAgent:
     account = Account(user="1003", password="bench1234", domain=domain, **account_fields)
     ua = await UserAgent.create(runtime, account)
@@ -112,12 +127,17 @@ def capture_sip_trace():
 
     The trace arrives as DEBUG records on ``baresip.native.sip``; the
     logger's level is raised for the duration so they reach the handler.
+    The log thread delivers them apart from call events, so the block's
+    last messages can still be on their way when it ends: leaving it
+    waits until the trace has gone quiet.
     """
     records: list[str] = []
+    last = [time.monotonic()]
 
     class Capture(logging.Handler):
         def emit(self, record):
             records.append(record.getMessage())
+            last[0] = time.monotonic()
 
     trace_logger = logging.getLogger("baresip.native.sip")
     handler = Capture(logging.DEBUG)
@@ -126,6 +146,9 @@ def capture_sip_trace():
     trace_logger.setLevel(logging.DEBUG)
     try:
         yield records
+        deadline = time.monotonic() + 2
+        while time.monotonic() - last[0] < 0.1 and time.monotonic() < deadline:
+            time.sleep(0.01)
     finally:
         trace_logger.removeHandler(handler)
         trace_logger.setLevel(old_level)

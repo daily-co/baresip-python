@@ -49,7 +49,11 @@ async def fs_cli(command: str) -> str:
 
 
 class Received(logging.Handler):
-    """The SIP messages the stack received, as its trace logged them."""
+    """The SIP messages the stack received, as its trace logged them.
+
+    The trace is delivered by the log thread, apart from call events, so
+    a message can be logged after the call event it caused.
+    """
 
     def __init__(self):
         super().__init__()
@@ -60,8 +64,14 @@ class Received(logging.Handler):
         if message.startswith("RX "):
             self.messages.append(message.split("\n", 1)[-1])
 
-    def first(self, start: str) -> str:
-        return next((m for m in self.messages if m.startswith(start)), "")
+    async def first(self, start: str, timeout: float = 3.0) -> str:
+        """The first received message starting with ``start``, once it is logged."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            found = next((m for m in self.messages if m.startswith(start)), "")
+            if found or asyncio.get_running_loop().time() >= deadline:
+                return found
+            await asyncio.sleep(0.01)
 
 
 @pytest.fixture
@@ -130,7 +140,7 @@ async def test_a_refusal_arrives_through_the_proxy(traced):
     with pytest.raises(CallFailed) as refusal:
         await placed.wait_established(timeout=10)
     assert (refusal.value.status, refusal.value.reason) == (480, "No agent free")
-    assert "\r\nRetry-After: 30\r\n" in trace.first("SIP/2.0 480")
+    assert "\r\nRetry-After: 30\r\n" in await trace.first("SIP/2.0 480")
 
 
 async def test_a_proxy_does_not_pass_503_on(traced):
@@ -157,8 +167,4 @@ async def test_hangup_headers_arrive_through_the_proxy(traced):
 
     await received.hangup(headers={"X-Disposition": "resolved"})
 
-    for _ in range(60):
-        if trace.first("BYE "):
-            break
-        await asyncio.sleep(0.05)
-    assert "\r\nX-Disposition: resolved\r\n" in trace.first("BYE ")
+    assert "\r\nX-Disposition: resolved\r\n" in await trace.first("BYE ")
