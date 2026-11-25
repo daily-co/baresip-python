@@ -21,6 +21,9 @@ make bench-up
 uv run pytest -m bench tests/integration
 ```
 
+The per-push CI does not run them. The `bench` workflow does: nightly on `main`, and on
+any branch on demand (Actions, `bench`, "Run workflow").
+
 ## Gates
 
 Every change must pass before it lands:

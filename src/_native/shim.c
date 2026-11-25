@@ -919,6 +919,51 @@ static const char *offer_mediaenc(const struct sip_msg *msg)
     return keys ? MENC_SRTP_OPTIONAL : NULL;
 }
 
+/* The media sections of the offer in this INVITE, as "m=..." lines. */
+static void offer_summary(const struct sip_msg *msg, char *buf, size_t size)
+{
+    const char *body = msg->mb ? (const char *)mbuf_buf(msg->mb) : NULL;
+    size_t n = msg->mb ? mbuf_get_left(msg->mb) : 0;
+    size_t i = 0, used = 0;
+
+    buf[0] = '\0';
+    while (body && i < n) {
+        const char *eol = memchr(&body[i], '\n', n - i);
+        size_t len = eol ? (size_t)(eol - &body[i]) : n - i;
+        size_t take = len && body[i + len - 1] == '\r' ? len - 1 : len;
+
+        if (take > 2 && 0 == memcmp(&body[i], "m=", 2) && used + take + 3 < size) {
+            if (used)
+                used += (size_t)re_snprintf(&buf[used], size - used, "; ");
+            memcpy(&buf[used], &body[i], take);
+            used += take;
+            buf[used] = '\0';
+        }
+        i += len + 1;
+    }
+}
+
+/* Accept the INVITE, and say so when the stack refuses it instead: a
+ * refused call is otherwise invisible to the application. The stack
+ * refuses an offer it cannot answer with a 488, reports success, and
+ * leaves no call behind. */
+static void accept_or_explain(struct ua *ua, const struct sip_msg *msg)
+{
+    char offer[200];
+    int err = ua_accept(ua, msg);
+
+    if (err) {
+        warning("call from %r refused before the application saw it: %m\n", &msg->from.auri,
+                err);
+    } else if (!ua_find_call_msg(ua, msg)) {
+        offer_summary(msg, offer, sizeof(offer));
+        warning("call from %r refused before the application saw it: nothing in its offer "
+                "\"%s\" is acceptable to this account; check its media encryption and "
+                "codecs\n",
+                &msg->from.auri, offer);
+    }
+}
+
 static void accept_incoming(const struct sip_msg *msg)
 {
     struct ua *ua = uag_find_msg(msg);
@@ -935,7 +980,7 @@ static void accept_incoming(const struct sip_msg *msg)
      * offer, which the stack then refuses. */
     if (!pick || (mode && 0 != str_cmp(mode, MENC_SRTP)) ||
         (mode && 0 == str_cmp(pick, MENC_FEEDBACK))) {
-        (void)ua_accept(ua, msg);
+        accept_or_explain(ua, msg);
         return;
     }
 
@@ -943,7 +988,7 @@ static void accept_incoming(const struct sip_msg *msg)
     if (mode)
         str_ncpy(rest, mode, sizeof(rest));
     (void)account_set_mediaenc(acc, pick);
-    (void)ua_accept(ua, msg);
+    accept_or_explain(ua, msg);
     (void)account_set_mediaenc(acc, rest[0] ? rest : NULL);
 }
 
@@ -969,6 +1014,15 @@ static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
         accept_incoming(msg);
         return;
     }
+
+    /* The stack refused an INVITE before a call existed for it; the text
+     * is the status it answered with. */
+    if (ev == BEVENT_SIPSESS_FAILED && msg && text)
+        warning("call from %r refused before the application saw it: %s%s\n", &msg->from.auri,
+                text,
+                0 == strncmp(text, "486 Max Calls", 13)
+                    ? " (the limit is Config.max_concurrent_calls)"
+                    : "");
 
     /* Draining: refuse new inbound work right here on the re thread —
      * a busy Python loop cannot leak a ring through. The call is
@@ -1333,6 +1387,13 @@ static void cmd_handler(int id, void *data, void *arg)
 
         if (!call) {
             bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
+            break;
+        }
+        /* While a renegotiation awaits its answer the stack would flip
+         * its hold state and send nothing. Leave the state alone and say
+         * so, for the caller to try again. */
+        if (!call_refresh_allowed(call)) {
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"busy\"}");
             break;
         }
         int cerr = call_hold(call, hold);

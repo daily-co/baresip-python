@@ -106,3 +106,15 @@ async def test_a_hold_right_after_the_answer_is_sent(pair):
 
     assert len(sent.starting("INVITE ")) == 2
     await placed.hangup()
+
+
+async def test_a_resume_straight_after_a_hold_waits_for_it(pair):
+    placed, received, sent = await pair(offer_video=False, answer_video=False)
+
+    await received.hold()
+    await received.resume()
+    await received.hold()
+
+    assert len(sent.starting("INVITE ")) == 4
+    assert received.is_on_hold
+    await placed.hangup()

@@ -52,6 +52,18 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   are dropped, as before; the first one on a call now logs a warning naming
   both sizes.
 
+- **`hold()` and `resume()` wait for a renegotiation that is still being
+  answered.** Both return when their re-INVITE is sent, so a `resume()`
+  straight after a `hold()` could arrive while the hold was still awaiting its
+  answer, and raised "a session refresh is already in flight; retry shortly".
+  They now wait up to five seconds for it and then send.
+
+- **A call refused before the application sees it is reported.** The stack
+  answers some INVITEs itself: an offer nothing in the account matches (488),
+  a call past `Config.max_concurrent_calls` (486), an unsupported extension.
+  Each now logs a warning naming the caller and the reason, and for a refused
+  offer its media sections.
+
 - **A SIP INFO request is answered `200 OK`.** Until now an INFO with a body
   other than DTMF relay was answered `488 Not Acceptable Here`. A body over
   8 KiB is still refused with `488`.
