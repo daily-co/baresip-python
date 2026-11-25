@@ -17,6 +17,7 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
+import baresip.call as call_module
 from baresip import BaresipError, CallFailed, Event, StackEvent, UnsupportedFeatureError
 from baresip.call import Call, CallState, _parse_refer_to
 from baresip.runtime import Runtime
@@ -71,6 +72,48 @@ async def test_hold_and_resume_no_change_paths_send_nothing():
     await call.resume()  # not held: nothing to do
     call._on_hold = True
     await call.hold()  # already held: nothing to do
+
+
+def busy_runtime(call: Call, monkeypatch, wait: float = 0.3) -> list[str]:
+    """Make every hold command answer "busy"; returns the commands' arguments as they come."""
+    sent: list[str] = []
+
+    async def cmd(_code, args=""):
+        sent.append(args)
+        return native.lib.BP_EV_DONE, '{"error":"busy"}'
+
+    monkeypatch.setattr(call._runtime, "cmd", cmd)
+    monkeypatch.setattr(call_module, "_REFRESH_WAIT", wait)
+    return sent
+
+
+async def test_hold_gives_up_when_a_renegotiation_stays_unanswered(monkeypatch):
+    call = incoming_call()
+    call._on_stack_event(event_for(call, Event.CALL_ESTABLISHED))
+    sent = busy_runtime(call, monkeypatch)
+
+    with pytest.raises(BaresipError, match="stayed in flight"):
+        await call.hold()
+
+    assert len(sent) > 2  # it kept trying for the whole wait
+    assert all(args == f"{call.handle} 1" for args in sent)
+    assert not call.is_on_hold
+
+
+async def test_hold_stops_waiting_when_the_call_ends(monkeypatch):
+    call = incoming_call()
+    call._on_stack_event(event_for(call, Event.CALL_ESTABLISHED))
+    sent = busy_runtime(call, monkeypatch, wait=5.0)
+
+    async def end_the_call():
+        await asyncio.sleep(0.12)
+        call._on_stack_event(event_for(call, Event.CALL_CLOSED))
+
+    ending = asyncio.create_task(end_the_call())
+    with pytest.raises(BaresipError, match="requires an established call"):
+        await asyncio.wait_for(call.hold(), 2)
+    await ending
+    assert 1 <= len(sent) < 10
 
 
 def test_remote_hold_tracked_by_events():
