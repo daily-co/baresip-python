@@ -148,6 +148,82 @@ def test_sip_ca_file_is_trusted_alongside_the_platform_directory(
     assert text == f"x\nsip_cafile {private}\nsip_capath {certs}\n"
 
 
+PEM = "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n"
+
+
+def stack_value(text: str, directive: str) -> str:
+    """What the stack reads for ``directive``: its parser stops at whitespace."""
+    line = next(ln for ln in text.splitlines() if ln.startswith(directive + " "))
+    return line.split(None, 2)[1]
+
+
+def test_a_ca_file_whose_path_has_a_space_still_reaches_the_stack(
+    no_ca_anywhere, monkeypatch, tmp_path
+):
+    spaced = tmp_path / "My Certs"
+    spaced.mkdir()
+    private = spaced / "ca.pem"
+    private.write_text(PEM.format("PRIVATE"))
+    monkeypatch.setenv("SIP_CA_FILE", str(private))
+    runtime = Runtime()
+
+    text = runtime._with_tls_trust("")
+
+    read_by_stack = stack_value(text, "sip_cafile")
+    assert " " not in read_by_stack
+    with open(read_by_stack) as f:
+        assert f.read() == PEM.format("PRIVATE")
+    runtime._remove_conf_dir()
+    assert not os.path.exists(read_by_stack)
+
+
+def test_a_platform_file_whose_path_has_a_space_still_reaches_the_stack(
+    no_ca_anywhere, monkeypatch, tmp_path
+):
+    spaced = tmp_path / "Program Files"
+    spaced.mkdir()
+    platform = spaced / "cert.pem"
+    platform.write_text(PEM.format("PUBLIC"))
+    platform_paths(monkeypatch, cafile=str(platform))
+    runtime = Runtime()
+
+    text = runtime._with_tls_trust("")
+
+    with open(stack_value(text, "sip_cafile")) as f:
+        assert f.read() == PEM.format("PUBLIC")
+    runtime._remove_conf_dir()
+
+
+def test_a_ca_directory_whose_path_has_a_space_is_gathered_into_a_file(
+    no_ca_anywhere, monkeypatch, tmp_path
+):
+    spaced = tmp_path / "ssl certs"
+    spaced.mkdir()
+    (spaced / "one.pem").write_text(PEM.format("ONE"))
+    (spaced / "0a1b2c3d.0").write_text(PEM.format("ONE"))  # the same certificate, by its hash
+    (spaced / "two.crt").write_text(PEM.format("TWO"))
+    (spaced / "README").write_text("not a certificate\n")
+    monkeypatch.setenv("SSL_CERT_DIR", str(spaced))
+    runtime = Runtime()
+
+    text = runtime._with_tls_trust("")
+
+    assert "sip_capath" not in text
+    with open(stack_value(text, "sip_cafile")) as f:
+        assert f.read() == PEM.format("ONE") + PEM.format("TWO")
+    runtime._remove_conf_dir()
+
+
+def test_paths_without_spaces_are_handed_over_as_they_are(no_ca_anywhere, monkeypatch, tmp_path):
+    path = bundle(tmp_path)
+    monkeypatch.setenv("SSL_CERT_FILE", path)
+    runtime = Runtime()
+
+    runtime._with_tls_trust("")
+
+    assert runtime._ca_bundle is None
+
+
 def test_sip_ca_file_alone_is_enough_for_tls(no_ca_anywhere, monkeypatch, tmp_path):
     private = bundle(tmp_path)
     monkeypatch.setenv("SIP_CA_FILE", private)
