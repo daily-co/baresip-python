@@ -1715,23 +1715,27 @@ static void cmd_handler(int id, void *data, void *arg)
             reason = "Busy Here";
         }
 
-        /* ua_hangupf — not bare call_hangup — is the whole-life-cycle
-         * hangup: it sends the response/BYE, emits CALL_CLOSED (which
-         * clears the handle slot), and releases the UA's reference.
+        /* The whole-life-cycle hangup, as ua_hangupf does it: send the
+         * response or BYE, emit CALL_CLOSED (which clears the handle
+         * slot), and release the UA's reference. ua_hangupf itself is
+         * not used: it emits CALL_CLOSED with the reason as the format
+         * string, and the reason here is the application's text.
          *
          * The headers reach the wire by two routes, since which message
          * ends the call depends on its state: the session's close
          * headers ride the BYE, and the format passed to the hangup
          * rides a rejection, which also wants its own end of headers.
-         * Both take a printf format, so the caller's text is only ever
-         * an argument to "%s". */
+         * Every one of these takes a printf format, so the caller's
+         * text is only ever an argument to "%s". */
         if (hdrs[0]) {
             (void)call_set_close_headers(call, "%s", hdrs);
-            ua_hangupf(call_get_ua(call), call, scode, reason, "%sContent-Length: 0\r\n\r\n",
-                       hdrs);
+            call_hangupf(call, scode, reason, "%sContent-Length: 0\r\n\r\n", hdrs);
         } else {
-            ua_hangup(call_get_ua(call), call, scode, reason);
+            call_hangup(call, scode, reason);
         }
+        (void)bevent_call_emit(BEVENT_CALL_CLOSED, call, "%s",
+                               reason ? reason : "Rejected by user");
+        mem_deref(call);
         bp_emit(BP_EV_DONE, msg->handle, NULL);
         break;
     }
