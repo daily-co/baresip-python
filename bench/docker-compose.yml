@@ -32,7 +32,7 @@ services:
       # namespace, so its ports are published here). One port per
       # Record-Route form; see conf/kamailio.cfg.
       - "127.0.0.1:15070:15070/udp"
-      - "127.0.0.1:15070-15074:15070-15074/tcp"
+      - "127.0.0.1:15070-15075:15070-15075/tcp"
     healthcheck:
       test: ["CMD", "fs_cli", "-x", "status"]
       interval: 2s

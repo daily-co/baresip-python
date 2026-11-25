@@ -75,6 +75,7 @@ gives the route form you want:
 | `15072` (TLS) | `<sips:127.0.0.1:15072;lr>` |
 | `15073` (TLS) | `<sips:localhost:15073;lr>` |
 | `15074` (TLS) | `<sip:127.0.0.1:15070;lr>`, `<sips:127.0.0.1:15074;lr>` |
+| `15075` (TLS) | `<sips:localtest.me:15075;lr>`: a public name for 127.0.0.1 that the bench certificate does not carry, as a server's route often names an address its certificate does not |
 
 The answering side takes the top entry as its next hop, the caller the bottom one. The `sips:`
 forms are what Flexisip (sip.linphone.org) sends. The proxy reaches an endpoint the way it
