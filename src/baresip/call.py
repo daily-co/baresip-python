@@ -176,14 +176,26 @@ def _transfer_target(uri: str, headers: dict | None) -> str:
     return f"<{address}>{rest}"
 
 
+def _is_context_header(name: str) -> bool:
+    """True for a header a transfer target may set on the call placed for it."""
+    lowered = name.lower()
+    return lowered == "user-to-user" or lowered.startswith("x-")
+
+
 def _carried_header_lines(request: "TransferRequest", headers: dict | None) -> str:
     """The header lines for the call placed to execute ``request``.
 
-    The call carries the headers attached to the request's target, then
+    The call carries the context attached to the request's target, then
     ``headers``: a name the request also has takes the given value, and
-    a value of None leaves that header out. The request's headers come
-    from the peer, so one that is call-defining or malformed is left out
-    with a warning; ``headers`` are the application's and are validated.
+    a value of None leaves that header out.
+
+    The request's headers come from the peer, which the call's own
+    trunk does not vouch for. Only what context travels in is taken
+    from them, ``User-to-User`` and ``X-`` headers; anything else (an
+    identity, a charging or a routing header) is left out with a
+    warning, as is a malformed one. ``headers`` are the application's:
+    they are validated, and may name any header that does not define
+    the call.
 
     Raises:
         ValueError: an invalid or call-defining header in ``headers``, or
@@ -192,8 +204,8 @@ def _carried_header_lines(request: "TransferRequest", headers: dict | None) -> s
     carried: dict[str, tuple[str, object]] = {}
     for name, value in request.headers.items():
         try:
-            if name.lower() in _CALL_DEFINING_HEADERS:
-                raise ValueError("call-defining")
+            if not _is_context_header(name):
+                raise ValueError("not a context header")
             header_lines({name: value})
         except ValueError:
             logger.warning("transfer request: header %r is not carried to the new call", name)
@@ -986,10 +998,12 @@ class Call:
     async def accept_transfer(self, *, headers: dict | None = None) -> "Call":
         """Execute the pending transfer request: dial its target.
 
-        The new call carries the headers the transferor attached to the
-        target (:attr:`TransferRequest.headers`), so context such as
-        ``User-to-User`` reaches the party being called. A header that
-        defines the call itself is never carried.
+        The new call carries the context the transferor attached to the
+        target, so that it reaches the party being called: the
+        ``User-to-User`` and ``X-`` headers of
+        :attr:`TransferRequest.headers`. The target comes from the far
+        end, so its other headers are not carried; pass in ``headers``
+        any the new call should have.
 
         Returns the new outbound call immediately (await its
         :meth:`wait_established` for the outcome). The stack ties this
