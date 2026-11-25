@@ -70,6 +70,12 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 
 ### Fixed
 
+- **An answered call is no longer renegotiated a moment after it is
+  established.** A call answered without video was sent a re-INVITE, with the
+  same media as the answer, 50 to 150 ms after the answer. It restarted the
+  audio streams, and a hold sent in that moment was refused as colliding
+  with it.
+
 - Calls through a proxy or to a peer that uses `sips:` addresses now work.
   A request whose next hop was a `sips:` URI, from a Record-Route (Flexisip,
   sip.linphone.org) or from the peer's Contact (OpenAI's SIP endpoint), was

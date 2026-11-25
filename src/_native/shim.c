@@ -1151,6 +1151,15 @@ static void cmd_handler(int id, void *data, void *arg)
             bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
             break;
         }
+        /* An incoming call is allocated expecting video. Answered
+         * without it, the stack would find the video direction changed
+         * and renegotiate the call moments after it is established. */
+        if (!video) {
+            enum sdp_dir adir, vdir;
+
+            call_get_media_estdir(call, &adir, &vdir);
+            call_set_media_estdir(call, adir, SDP_INACTIVE);
+        }
         int cerr = call_answer(call, 200, video ? VIDMODE_ON : VIDMODE_OFF);
 
         if (cerr) {

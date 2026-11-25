@@ -130,8 +130,12 @@ async def routed(certificate, monkeypatch):
         await proxy.close()
 
 
-async def unhurried(change) -> None:
-    """Hold or resume, waiting out a renegotiation that is still in flight."""
+async def once_settled(change) -> None:
+    """Hold or resume once the previous renegotiation has been answered.
+
+    ``hold()`` and ``resume()`` return when their offer is sent, so the
+    next one can arrive while the answer is still on its way.
+    """
     for _ in range(40):
         try:
             return await change()
@@ -186,18 +190,15 @@ async def test_a_hold_from_the_answering_side_arrives(routed, form):
     placed, received, _proxy = await routed(form)
     await placed.wait_established(timeout=5)
     await received.wait_established(timeout=5)
-    # Both sides renegotiate once on their own just after the call is
-    # up; a hold sent into that would collide with it.
-    await asyncio.sleep(0.6)
 
-    await unhurried(received.hold)
+    await received.hold()
     for _ in range(40):
         if placed.remote_on_hold:
             break
         await asyncio.sleep(0.05)
     assert placed.remote_on_hold
 
-    await unhurried(received.resume)
+    await once_settled(received.resume)
     for _ in range(40):
         if not placed.remote_on_hold:
             break

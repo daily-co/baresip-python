@@ -164,8 +164,12 @@ async def audio_arrives(call, timeout: float = 3.0) -> bool:
     return len(call.audio.read(1 << 20)) > 0
 
 
-async def unhurried(change) -> None:
-    """Hold or resume, waiting out a renegotiation that is still in flight."""
+async def once_settled(change) -> None:
+    """Hold or resume once the previous renegotiation has been answered.
+
+    ``hold()`` and ``resume()`` return when their offer is sent, so the
+    next one can arrive while the answer is still on its way.
+    """
     for _ in range(40):
         try:
             return await change()
@@ -205,13 +209,10 @@ async def test_the_answering_sides_hangup_arrives(routed, form):
 @pytest.mark.parametrize("form", FORMS)
 async def test_a_hold_from_the_answering_side_arrives(routed, form):
     placed, received = await routed(form)
-    # Both sides renegotiate once on their own just after the call is
-    # up; a hold sent into that would collide with it.
-    await asyncio.sleep(0.6)
 
-    await unhurried(received.hold)
+    await received.hold()
     await until(lambda: placed.remote_on_hold)
-    await unhurried(received.resume)
+    await once_settled(received.resume)
     await until(lambda: not placed.remote_on_hold)
 
 
