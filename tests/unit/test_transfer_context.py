@@ -46,6 +46,8 @@ _PORTS = itertools.count(15650)
             "1005\nUser-to-User=56a390f3d2b7310023a2%3Bencoding%3Dhex&X-Case=7",
         ),
         ("1005", {}, "1005"),
+        ("support@pbx.example", None, "support@pbx.example"),
+        ("tel:+15551234567", None, "tel:+15551234567"),
         (
             "sip:q@pbx.example",
             {"User-to-User": UUI},
@@ -82,6 +84,10 @@ def test_the_target_is_bracketed_and_carries_the_headers_escaped(uri, headers, t
         ("sip:q@pbx.example", {"X A": "1"}),
         ("sip:q@pbx.example", {"": "1"}),
         ("1005", {"Via": "x"}),
+        ("support@pbx.example", {"X-A": "1"}),
+        ("tel:+15551234567", {"X-A": "1"}),
+        ("pbx.example;transport=tls", {"X-A": "1"}),
+        ("support?X-B=2", {"X-A": "1"}),
         ("<sip:q@pbx.example", None),
     ],
 )
