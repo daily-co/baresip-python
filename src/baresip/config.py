@@ -177,9 +177,9 @@ class Account:
     transport: Literal["udp", "tcp", "tls"] = "udp"
     audio_codecs: tuple[str, ...] = ("pcmu", "pcma")
     dtmf_mode: Literal["rtpevent", "info", "auto"] = "rtpevent"
-    media_encryption: Literal["none", "srtp"] = MEDIA_ENCRYPTION_NONE
     auth_user: str | None = None
     extra_params: tuple[str, ...] = ()
+    media_encryption: Literal["none", "srtp"] = MEDIA_ENCRYPTION_NONE
 
     def __post_init__(self):
         if not self.user:
