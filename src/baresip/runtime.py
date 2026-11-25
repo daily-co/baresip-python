@@ -222,16 +222,21 @@ class Runtime:
             config = config.render()
         # The parser rejects an empty buffer, so "no settings" still needs
         # something to parse.
-        self._config_text = self._with_tls_trust(config or _DEFAULT_CONFIG)
+        try:
+            self._config_text = self._with_tls_trust(config or _DEFAULT_CONFIG)
 
-        with Runtime._class_lock:
-            if Runtime._process_poisoned:
-                raise RuntimeDead("a runtime already died in this process; start a new process")
-            if Runtime._active is not None:
-                raise BaresipError("another Runtime is active; only one may run at a time")
-            if self._state != "new":
-                raise BaresipError(f"cannot start a runtime in state {self._state!r}")
-            Runtime._active = self
+            with Runtime._class_lock:
+                if Runtime._process_poisoned:
+                    raise RuntimeDead("a runtime already died in this process; start a new process")
+                if Runtime._active is not None:
+                    raise BaresipError("another Runtime is active; only one may run at a time")
+                if self._state != "new":
+                    raise BaresipError(f"cannot start a runtime in state {self._state!r}")
+                Runtime._active = self
+        except BaseException:
+            # Nothing has started that would later remove it.
+            self._discard_ca_bundle()
+            raise
 
         try:
             err = lib.bp_init()
@@ -478,14 +483,18 @@ class Runtime:
                 logger.error("native log reader did not stop")
             self._log_thread = None
 
-    def _remove_conf_dir(self) -> None:
-        """Discard the stack's private directory, unless the stack is still
-        standing — a wedged SIP thread may still be reading from it."""
-        # The joined CA file is read once, when the stack starts.
+    def _discard_ca_bundle(self) -> None:
+        """Delete the temporary CA file this runtime made, if it made one."""
         if self._ca_bundle is not None:
             with contextlib.suppress(OSError):
                 os.unlink(self._ca_bundle)
             self._ca_bundle = None
+
+    def _remove_conf_dir(self) -> None:
+        """Discard the stack's private directory, unless the stack is still
+        standing — a wedged SIP thread may still be reading from it."""
+        # The gathered CA file is read once, when the stack starts.
+        self._discard_ca_bundle()
         if self._conf_dir is None:
             return
         if not self._stack_down.is_set() and self._thread is not None and self._thread.is_alive():
