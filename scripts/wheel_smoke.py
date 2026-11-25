@@ -71,7 +71,31 @@ def main() -> None:
         await call.hangup()
 
     asyncio.run(cycle())
+    carries_the_bye_warnings()
     print("wheel_smoke: OK")
+
+
+# Text only the second carried patch puts into libre: its warnings for a
+# hang-up that could not be sent or was not delivered.
+BYE_WARNINGS = (b"BYE could not be sent", b"BYE was not delivered")
+
+
+def carries_the_bye_warnings() -> None:
+    """Fail if the wheel's libre lacks the carried hang-up warnings.
+
+    Nothing short of a call whose hang-up fails would log them, so the
+    built extension is searched for their text instead.
+    """
+    import baresip._native as native
+
+    with open(native.__file__, "rb") as extension:
+        built = extension.read()
+    missing = [text.decode() for text in BYE_WARNINGS if text not in built]
+    if missing:
+        raise SystemExit(
+            f"wheel_smoke: the bundled libre lacks {missing}; "
+            "it was built without third_party/patches"
+        )
 
 
 if __name__ == "__main__":
