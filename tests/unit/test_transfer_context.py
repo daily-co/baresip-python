@@ -206,6 +206,35 @@ def test_the_peers_bad_header_does_not_fail_an_accept_that_adds_headers(caplog):
     assert "is not carried" in caplog.text
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "P-Asserted-Identity",
+        "P-Preferred-Identity",
+        "Diversion",
+        "Privacy",
+        "Proxy-Authorization",
+        "Authorization",
+        "Require",
+        "Session-Expires",
+        "Reason",
+        "Subject",
+        "Xtra",
+    ],
+)
+def test_only_context_headers_are_taken_from_a_transfer_target(caplog, name):
+    request = request_with({name: "from the far end", "User-to-User": UUI, "x-case": "7"})
+    with caplog.at_level(logging.WARNING, logger="baresip.call"):
+        assert _carried_header_lines(request, None) == f"\nUser-to-User: {UUI}\nx-case: 7"
+    assert repr(name) in caplog.text
+
+
+def test_the_application_may_add_a_header_a_target_may_not():
+    request = request_with({"P-Asserted-Identity": "<sip:evil@example>", "User-to-User": UUI})
+    lines = _carried_header_lines(request, {"P-Asserted-Identity": "<sip:bot@example>"})
+    assert lines == f"\nUser-to-User: {UUI}\nP-Asserted-Identity: <sip:bot@example>"
+
+
 def test_the_peers_call_defining_and_malformed_headers_are_dropped(caplog):
     request = request_with(
         {"From": "sip:evil@example", "ROUTE": "<sip:1.2.3.4;lr>", "X-A": "1\r\nVia: x", "X-Ok": "1"}
@@ -240,7 +269,7 @@ async def three_way(request):
         Config(
             net_interface="127.0.0.1",
             max_concurrent_calls=None,
-            expose_headers=("User-to-User", "X-Case", "X-Mine"),
+            expose_headers=("User-to-User", "X-Case", "X-Mine", "P-Asserted-Identity", "Diversion"),
             extra_config_text=f"sip_listen {own}\n",
         )
     )
@@ -376,4 +405,31 @@ async def test_a_bare_user_part_without_context_is_transferred_as_before(three_w
 
     await received.accept_transfer()
     await (await asyncio.wait_for(to_carol.get(), 5)).answer()
+    await transfer
+
+
+@pytest.mark.parametrize("three_way", ["manual", "auto"], indirect=True)
+async def test_an_identity_attached_to_a_transfer_target_does_not_reach_the_new_call(three_way):
+    placed, received, to_carol, own = three_way
+    attached = {
+        "P-Asserted-Identity": "<sip:ceo@example.com>",
+        "Diversion": "<sip:other@example.com>",
+        "X-Case": "7",
+    }
+
+    transfer = asyncio.create_task(
+        placed.transfer(f"sip:carol@{own}", headers=attached, timeout=10)
+    )
+    if received.transfer_request is None:
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if received.transfer_request is not None or not to_carol.empty():
+                break
+    if to_carol.empty():  # the manual policy: the application accepts
+        assert received.transfer_request.headers == attached
+        await received.accept_transfer()
+    new_call = await asyncio.wait_for(to_carol.get(), 5)
+
+    assert new_call.headers == {"X-Case": "7"}
+    await new_call.answer()
     await transfer

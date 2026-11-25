@@ -39,8 +39,9 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   `sips:` target in angle brackets, which an address with parameters or
   attached headers needs to be read correctly. A call placed for a peer's
   transfer request, by `accept_transfer` or by the `"auto"` transfer
-  policy, now carries the headers attached to the target; until now they
-  were discarded. Headers that define the call itself are left out.
+  policy, now carries the `User-to-User` and `X-` headers attached to the
+  target; until now every attached header was discarded. The target's other
+  headers are still left out.
 
 - **An unencrypted call offered in the RTCP-feedback profile is accepted.**
   An offer of `RTP/AVPF` was answered `488 Not Acceptable Here`; the Linphone

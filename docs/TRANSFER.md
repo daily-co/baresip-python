@@ -129,14 +129,18 @@ dialing premium-rate or arbitrary destinations by anyone who can get a call
 established with it. Auto-accept is for closed systems where every peer is
 trusted.
 
-The new call carries the context the transferor attached to the target:
-`TransferRequest.headers` holds it, and `accept_transfer()` and the `"auto"`
-policy set those headers on the call they place.
-`accept_transfer(headers={...})` adds headers of the application's own: a name
-the request also has takes the value given, and a value of `None` leaves that
-header out. A header that defines the call itself is never taken from the target,
-which comes from the far end and is not to be trusted with them. To read
-context on a call you *receive*, list the header names in
+The new call carries the context the transferor attached to the target.
+`TransferRequest.headers` holds every header attached; `accept_transfer()` and
+the `"auto"` policy set the `User-to-User` and `X-` headers among them on the
+call they place. The target comes from the far end, which your trunk does not
+vouch for, so nothing else is taken from it: an identity header
+(`P-Asserted-Identity`), a `Diversion` or a `Require` attached to the target
+is left out, with a warning in the log.
+
+`accept_transfer(headers={...})` adds headers of the application's own, which
+may be any header that does not define the call itself: a name the request
+also has takes the value given, and a value of `None` leaves that header out.
+To read context on a call you *receive*, list the header names in
 `Config(expose_headers=[...])`.
 
 Not deciding is also a decision, and a bad one: an ignored transfer times out
