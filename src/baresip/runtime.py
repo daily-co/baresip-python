@@ -66,6 +66,30 @@ _DEFAULT_CONFIG = "# baresip-python defaults\n"
 _TLS_TRUST_LINE = re.compile(r"^[ \t]*sip_(cafile|capath|verify_server)\b", re.MULTILINE)
 
 
+_TRANSPORTS_LINE = re.compile(r"^([ \t]*sip_transports[ \t]+)(.*)$", re.MULTILINE | re.IGNORECASE)
+
+
+def _without_tls_transports(text: str) -> str:
+    """``text`` with TLS and secure WebSocket taken out of the stack's transports.
+
+    The stack reads the first ``sip_transports`` line, so one the
+    configuration already carries is narrowed in place: appending
+    another would leave TLS on, and unverified.
+    """
+    if not _TRANSPORTS_LINE.search(text):
+        return text + "sip_transports UDP,TCP\n"
+
+    def narrowed(match: re.Match) -> str:
+        kept = [
+            name
+            for name in (part.strip() for part in match.group(2).split(","))
+            if name and name.lower() not in ("tls", "wss")
+        ]
+        return match.group(1) + ",".join(kept or ["UDP"])
+
+    return _TRANSPORTS_LINE.sub(narrowed, text)
+
+
 def _has_whitespace(path: str) -> bool:
     return any(c.isspace() for c in path)
 
@@ -352,7 +376,7 @@ class Runtime:
                 "no CA certificates found; TLS is disabled. Set SIP_CA_FILE to a CA "
                 "bundle, or install certifi."
             )
-            return text + "sip_transports UDP,TCP\n"
+            return _without_tls_transports(text)
         directive, path = found if found is not None else (None, None)
         logger.info("verifying TLS servers against %s", " and ".join(p for p in (path, extra) if p))
         files = [p for p in ((path if directive == "sip_cafile" else None), extra) if p]

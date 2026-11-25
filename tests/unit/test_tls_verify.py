@@ -253,6 +253,24 @@ def test_without_ca_certificates_tls_leaves_the_transports(no_ca_anywhere):
     assert not runtime.tls_available
 
 
+@pytest.mark.parametrize(
+    ("given", "left"),
+    [
+        ("sip_transports UDP,TCP,TLS\n", "sip_transports UDP,TCP\n"),
+        ("sip_transports tls\n", "sip_transports UDP\n"),
+        ("net_interface x\n  sip_transports\tTLS , udp,WSS,ws\n", "net_interface x\n  sip_transports\tudp,ws\n"),
+        ("sip_transports UDP\nsip_transports TLS\n", "sip_transports UDP\nsip_transports UDP\n"),
+    ],
+)  # fmt: skip
+def test_without_ca_certificates_a_transports_line_of_the_callers_loses_tls(
+    no_ca_anywhere, given, left
+):
+    runtime = Runtime()
+
+    assert runtime._with_tls_trust(given) == left
+    assert not runtime.tls_available
+
+
 async def test_without_ca_certificates_tls_is_refused_and_udp_works(no_ca_anywhere):
     runtime = Runtime()
     await runtime.start(Config(net_interface="127.0.0.1"))
