@@ -42,6 +42,16 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   policy, now carries the headers attached to the target; until now they
   were discarded. Headers that define the call itself are left out.
 
+- **An unencrypted call offered in the RTCP-feedback profile is accepted.**
+  An offer of `RTP/AVPF` was answered `488 Not Acceptable Here`; the Linphone
+  app offers it first and only then falls back, so its unencrypted calls took
+  seconds longer to connect. It is now answered in `RTP/AVPF`. An account with
+  `media_encryption="srtp"` refuses it, as it does any unencrypted offer.
+
+- **Received video larger than `Config.video_size` is reported.** Such frames
+  are dropped, as before; the first one on a call now logs a warning naming
+  both sizes.
+
 - **A SIP INFO request is answered `200 OK`.** Until now an INFO with a body
   other than DTMF relay was answered `488 Not Acceptable Here`. A body over
   8 KiB is still refused with `488`.
