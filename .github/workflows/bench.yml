@@ -1,12 +1,17 @@
-# The integration suite against the FreeSWITCH bench (bench/README.md):
-# registration, calls in both directions, hold, transfer, DTMF, TLS and
-# video through a real switch. Runs on the runner itself, not in a job
-# container: the tests reach the bench on 127.0.0.1 and drive its
-# container through docker.
+# The integration suite against the bench (bench/README.md): registration,
+# calls in both directions, hold, transfer, DTMF, TLS, encryption and
+# video through a real switch and a real proxy. Runs on the runner itself,
+# not in a job container: the tests reach the bench on 127.0.0.1 and drive
+# its containers through docker.
+#
+# Nightly on the default branch, and on demand on any branch. A failed
+# nightly run mails whoever last changed this file's schedule.
 name: bench
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "23 2 * * *"
 
 env:
   PYTHONFAULTHANDLER: 1
@@ -27,12 +32,13 @@ jobs:
       - run: make ext
       - run: make bench-up
       - run: uv run pytest tests/integration -m bench -v
-      - name: Collect FreeSWITCH logs
+      - name: Collect the bench's logs
         if: failure()
         run: |
           mkdir -p build/bench-logs
           docker ps -a > build/bench-logs/containers.txt 2>&1 || true
           docker logs baresip-bench-freeswitch > build/bench-logs/container.log 2>&1 || true
+          docker logs baresip-bench-kamailio > build/bench-logs/kamailio.log 2>&1 || true
           docker cp baresip-bench-freeswitch:/var/log/freeswitch/freeswitch.log build/bench-logs/ || true
       - uses: actions/upload-artifact@v4
         if: failure()
