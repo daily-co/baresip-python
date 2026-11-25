@@ -152,7 +152,8 @@ def _transfer_target(uri: str, headers: dict | None) -> str:
     second line.
 
     Raises:
-        ValueError: an invalid or call-defining header.
+        ValueError: an invalid or call-defining header, or headers for
+            a ``uri`` that is neither a full address nor a bare user part.
     """
     header_lines(headers)
     for name in headers or {}:
@@ -169,8 +170,16 @@ def _transfer_target(uri: str, headers: dict | None) -> str:
             raise ValueError("uri opens an angle bracket and never closes it")
     elif re.match(r"sips?:", uri, re.IGNORECASE):
         address, rest = uri, ""
+    elif not attached:
+        return uri
+    elif any(c in uri for c in "@:;?<>"):
+        # Neither a full sip: address nor a plain user part: there is no
+        # place in it the headers could be attached to.
+        raise ValueError(
+            f"headers need a sip: or sips: address, or a bare user part, to attach to; got {uri!r}"
+        )
     else:
-        return f"{uri}\n{attached}" if attached else uri
+        return f"{uri}\n{attached}"
     if attached:
         address += ("&" if "?" in address else "?") + attached
     return f"<{address}>{rest}"
