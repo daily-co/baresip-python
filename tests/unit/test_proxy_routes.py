@@ -44,6 +44,9 @@ _PORTS = itertools.count(5385)
 # machine's DNS server and reads no hosts file, so "localhost" resolves
 # only where that server answers for it. The runtime here is told to use
 # the system resolver, which always does.
+# The port a sips: address without one means.
+SIPS_PORT = 5061
+
 FORMS = {
     "sip over udp": ("udp", ("<sip:127.0.0.1:{udp};lr>",), None),
     "sip, one entry per side": (
@@ -101,10 +104,15 @@ async def routed(certificate, monkeypatch):
     )
     proxies: list[SipProxy] = []
 
-    async def connect(form, target: str | None = None, caller_transport: str | None = None):
+    async def connect(
+        form,
+        target: str | None = None,
+        caller_transport: str | None = None,
+        proxy_tls_port: int = 0,
+    ):
         transport, record_route, contact = FORMS[form] if isinstance(form, str) else form
         transport = caller_transport or transport
-        proxy = SipProxy(("127.0.0.1", port), cert, key, record_route, contact)
+        proxy = SipProxy(("127.0.0.1", port), cert, key, record_route, contact, proxy_tls_port)
         await proxy.start()
         proxies.append(proxy)
         caller = await UserAgent.create(
@@ -200,6 +208,29 @@ async def test_requests_on_a_sips_route_travel_over_tls(routed):
 
     arrived_on = dict(proxy.requests)
     assert arrived_on["INVITE"] == "UDP"  # dialled over UDP, before any route existed
+    assert arrived_on["ACK"] == "TLS"
+    assert arrived_on["BYE"] == "TLS"
+
+
+@pytest.mark.parametrize("caller_transport", ["tls", "udp"])
+async def test_a_sips_route_without_a_port_is_reached_over_tls(routed, caller_transport):
+    """With no port the stack looks the transport up, and the lookup may
+    pick UDP; a sips: route must still go over TLS, to the TLS port."""
+    try:
+        placed, received, proxy = await routed(
+            ("tls", ("<sips:localhost;lr>",), None),
+            caller_transport=caller_transport,
+            proxy_tls_port=SIPS_PORT,
+        )
+    except OSError:
+        pytest.skip(f"port {SIPS_PORT}, the default for sips:, is in use")
+    await placed.wait_established(timeout=5)
+    await received.wait_established(timeout=5)
+    gone = closed(placed)
+    await received.hangup()
+    await asyncio.wait_for(gone, 3)
+
+    arrived_on = dict(proxy.requests[1:])  # after the INVITE, which no route steered
     assert arrived_on["ACK"] == "TLS"
     assert arrived_on["BYE"] == "TLS"
 
