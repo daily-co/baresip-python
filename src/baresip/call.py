@@ -240,7 +240,8 @@ class TransferRequest:
 
     Parameters:
         target: The parsed target URI.
-        raw: The complete Refer-To value, exactly as received.
+        raw: The complete Refer-To value as received, on one line: a
+            value the sender folded over several lines is unfolded.
         replaces: True when the target embeds a Replaces parameter —
             an attended transfer, pointing at an existing dialog.
         method: The requested method, uppercase. "INVITE" (a call) in
@@ -263,8 +264,14 @@ def _parse_refer_to(raw: str) -> TransferRequest:
     The value may be angle-bracketed, carry URI headers (?Replaces=...)
     inside the brackets, and address parameters (;method=...) outside
     them. Execution always uses ``raw`` — this parse only informs.
+
+    A header value may arrive folded over several lines, which means
+    the same as a space (RFC 3261 section 7.3.1). It is unfolded: the
+    accept command takes the value as one line and reads the lines
+    after it as headers.
     """
-    value = raw.strip()
+    raw = re.sub(r"[ \t]*\r?\n[ \t]*|\r", " ", raw).strip()
+    value = raw
     if value.startswith("<"):
         addr, _, params = value[1:].partition(">")
     else:

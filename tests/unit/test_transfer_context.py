@@ -168,6 +168,27 @@ def test_a_request_exposes_the_headers_attached_to_its_target(raw, headers):
     assert _parse_refer_to(raw).headers == headers
 
 
+@pytest.mark.parametrize(
+    "folded",
+    [
+        "<sip:q@h?X-Case=7>;\r\n method=INVITE",
+        "<sip:q@h?X-Case=7>\r\n\t;method=INVITE",
+        "<sip:q@h?X-Case=7>;\n X-Injected: 1",
+        "<sip:q@h?X-Case=7>\r\nX-Injected: 1",
+        "<sip:q@h?X-Case=7>\r",
+    ],
+)
+def test_a_folded_target_is_unfolded_onto_one_line(folded):
+    request = _parse_refer_to(folded)
+
+    assert "\r" not in request.raw and "\n" not in request.raw
+    assert request.target == "sip:q@h"
+    assert request.headers == {"X-Case": "7"}
+    # The accept command reads every line after the target as a header.
+    assert _carried_header_lines(request, None) == "\nX-Case: 7"
+    assert f"1 {request.raw}{_carried_header_lines(request, None)}".count("\n") == 1
+
+
 def request_with(headers: dict) -> TransferRequest:
     return TransferRequest(
         target="sip:q@h", raw="<sip:q@h>", replaces=False, method="INVITE", headers=headers
