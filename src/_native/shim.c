@@ -863,9 +863,20 @@ static void emit_stack_event(int ev, struct ua *ua, struct call *call, const str
 #define MENC_SRTP_OPTIONAL "srtp"       /* keys on an unencrypted line */
 #define SDP_PROTO_SAVP "RTP/SAVP"
 #define SDP_PROTO_SAVPF "RTP/SAVPF"
+#define SDP_PROTO_AVPF "RTP/AVPF"
 
-/* The account mode that answers this offer with SRTP, or NULL when the
- * offer has none. Of several audio sections an SRTP one is preferred.
+/* A stream takes its SDP profile from its account's media-encryption
+ * mode, and the stack has none for RTP/AVPF, the unencrypted profile
+ * with RTCP feedback: an offer in it would find no stream to match and
+ * be refused. This mode encrypts nothing and only names that profile. */
+#define MENC_FEEDBACK "avpf"
+static struct menc menc_feedback = {
+    .id = MENC_FEEDBACK,
+    .sdp_proto = SDP_PROTO_AVPF,
+};
+
+/* The account mode that answers this offer in its own profile, or NULL
+ * for the plain one. Of several audio sections an SRTP one is preferred.
  *
  * FIXME: a DTLS-SRTP offer (UDP/TLS/RTP/SAVP[F] with a fingerprint) is
  * not recognised here, so it is answered like an unencrypted one and
@@ -875,7 +886,7 @@ static const char *offer_mediaenc(const struct sip_msg *msg)
 {
     const char *body = msg->mb ? (const char *)mbuf_buf(msg->mb) : NULL;
     size_t n = msg->mb ? mbuf_get_left(msg->mb) : 0;
-    bool savp = false, savpf = false, keys = false;
+    bool savp = false, savpf = false, avpf = false, keys = false;
     size_t i = 0;
 
     while (body && i < n) {
@@ -890,6 +901,8 @@ static const char *offer_mediaenc(const struct sip_msg *msg)
                 savp = true;
             else if (0 == pl_strcmp(&proto, SDP_PROTO_SAVPF))
                 savpf = true;
+            else if (0 == pl_strcmp(&proto, SDP_PROTO_AVPF))
+                avpf = true;
         } else if (len >= 9 && 0 == memcmp(&body[i], "a=crypto:", 9)) {
             keys = true;
         }
@@ -900,6 +913,8 @@ static const char *offer_mediaenc(const struct sip_msg *msg)
         return MENC_SRTP;
     if (savpf)
         return MENC_SRTP_FEEDBACK;
+    if (avpf)
+        return MENC_FEEDBACK;
     /* Keys on a plain line: the caller would like SRTP but accepts none. */
     return keys ? MENC_SRTP_OPTIONAL : NULL;
 }
@@ -916,7 +931,10 @@ static void accept_incoming(const struct sip_msg *msg)
         (void)sip_treply(NULL, uag_sip(), msg, 404, "Not Found");
         return;
     }
-    if (!pick || (mode && 0 != str_cmp(mode, MENC_SRTP))) {
+    /* An account that requires SRTP keeps its mode for an unencrypted
+     * offer, which the stack then refuses. */
+    if (!pick || (mode && 0 != str_cmp(mode, MENC_SRTP)) ||
+        (mode && 0 == str_cmp(pick, MENC_FEEDBACK))) {
         (void)ua_accept(ua, msg);
         return;
     }
@@ -1857,6 +1875,7 @@ static void loop_unwind(enum bp_stage stage)
          * its call, so unregistering now leaves nothing dangling. */
         bp_aumem_unregister();
         bp_vidmem_unregister();
+        menc_unregister(&menc_feedback);
     }
     if (stage >= BP_STAGE_CONF)
         conf_close();
@@ -1967,6 +1986,7 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
     err = bp_vidmem_register();
     if (err)
         goto out;
+    menc_register(baresip_mencl(), &menc_feedback);
 
     err = mqueue_alloc(&g_mq, cmd_handler, NULL);
     if (err)

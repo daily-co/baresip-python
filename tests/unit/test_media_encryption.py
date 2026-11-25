@@ -33,6 +33,7 @@ PLAIN = None
 KEYS_ON_PLAIN_LINE = "srtp"  # would like SRTP, accepts none
 SRTP = "srtp-mand"
 SRTP_FEEDBACK = "srtp-mandf"  # the RTCP-feedback profile
+FEEDBACK = "avpf"  # the RTCP-feedback profile, unencrypted
 
 W, H = 128, 96
 
@@ -131,6 +132,7 @@ async def call_bot(loopback, offer: str | None, bot_setting: str = "none", bot_r
     ("offer", "bot_setting", "encrypted"),
     [
         (PLAIN, "none", False),
+        (FEEDBACK, "none", False),
         (KEYS_ON_PLAIN_LINE, "none", True),
         (SRTP, "none", True),
         (SRTP_FEEDBACK, "none", True),
@@ -162,6 +164,75 @@ async def test_requiring_srtp_refuses_an_unencrypted_call_before_the_application
     with pytest.raises(CallFailed) as refusal:
         await failed
     assert refusal.value.status == 488
+
+
+async def test_requiring_srtp_refuses_an_unencrypted_feedback_offer(loopback):
+    _placed, received, failed = await call_bot(loopback, FEEDBACK, "srtp")
+
+    assert received is None
+    with pytest.raises(CallFailed) as refusal:
+        await failed
+    assert refusal.value.status == 488
+
+
+async def test_an_unencrypted_feedback_offer_is_answered_in_its_profile(loopback):
+    runtime, _own = loopback
+    sent: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: sent.append(record.getMessage())
+    sip_logger = logging.getLogger("baresip.native.sip")
+    level = sip_logger.level
+    sip_logger.addHandler(handler)
+    sip_logger.setLevel(logging.DEBUG)
+    await runtime.set_sip_trace(True)
+    try:
+        placed, received, _ = await call_bot(loopback, FEEDBACK)
+        assert received is not None
+        answers: list[str] = []
+        for _ in range(300):  # the trace arrives on the log thread
+            answers = [
+                m for m in sent if m.startswith("TX") and "\nSIP/2.0 200" in m and "m=audio" in m
+            ]
+            if answers:
+                break
+            await asyncio.sleep(0.01)
+        assert answers and "\r\nm=audio " in answers[0]
+        assert (
+            answers[0].split("\r\nm=audio ", 1)[1].split("\r\n", 1)[0].split(" ")[1] == "RTP/AVPF"
+        )
+        await placed.hangup()
+    finally:
+        sip_logger.removeHandler(handler)
+        sip_logger.setLevel(level)
+
+
+async def test_an_unencrypted_feedback_video_call_carries_frames(roomy_loopback):
+    runtime, own = roomy_loopback
+    caller = await UserAgent.create(
+        runtime, account("caller", own, extra_params=(f"mediaenc={FEEDBACK}",))
+    )
+    bot = await UserAgent.create(runtime, account("bot", own))
+    incoming: asyncio.Queue = asyncio.Queue()
+    bot.on_incoming(incoming.put_nowait)
+
+    placed = await caller.dial(f"sip:bot@{own}", video=True)
+    received = await asyncio.wait_for(incoming.get(), 5)
+    await received.answer(video=True)
+    await placed.wait_established(timeout=5)
+    await received.wait_established(timeout=5)
+
+    bright = bytes([200]) * (W * H) + b"\x80" * (2 * (W // 2) * (H // 2))
+    frame = None
+    deadline = asyncio.get_running_loop().time() + 5
+    while frame is None:
+        assert asyncio.get_running_loop().time() < deadline, "no video frame arrived"
+        with contextlib.suppress(VideoNotActive):  # the streams are still coming up
+            placed.video.write_frame(bright)
+            frame = received.video.read_frame()
+        await asyncio.sleep(0.03)
+
+    assert not placed.media_encrypted and not received.media_encrypted
+    assert frame.data[0] > 150
 
 
 async def test_overlapping_calls_each_get_their_own_encryption(roomy_loopback):
