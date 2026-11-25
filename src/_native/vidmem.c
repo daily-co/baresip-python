@@ -596,6 +596,7 @@ static int vdec_frame(struct vidfilt_dec_st *stf, struct vidframe *frame, uint64
     struct vidmem_dec_st *st = (struct vidmem_dec_st *)stf;
     struct pack_ctx ctx = {.frame = frame};
     struct bp_video_slot *slot;
+    bool first_oversize = false;
     int rc;
 
     if (st->bypass || !frame || frame->fmt != VID_FMT_YUV420P)
@@ -613,10 +614,17 @@ static int vdec_frame(struct vidfilt_dec_st *stf, struct vidframe *frame, uint64
         if (rc == 0)
             slot->rx_frames++;
         else if (rc == -EMSGSIZE)
-            slot->rx_oversize++;
+            first_oversize = 0 == slot->rx_oversize++;
         /* -ENOSPC is counted by the ring: a reader that never existed. */
     }
     bp_mtx_unlock(&g_video_lock);
+    /* Said once per call: the application otherwise sees no video and
+     * no reason for it. */
+    if (first_oversize)
+        warning("vidmem: received video is %ux%u, larger than the configured video_size "
+                "%ux%u; frames that size are dropped\n",
+                frame->size.w, frame->size.h, conf_config()->video.width,
+                conf_config()->video.height);
     return 0;
 }
 
