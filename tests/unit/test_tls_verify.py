@@ -15,6 +15,7 @@ bench tests.
 import os
 import ssl
 import sys
+import tempfile
 import types
 
 import pytest
@@ -23,7 +24,7 @@ pytest.importorskip("baresip._native")
 
 import baresip.config as config_module
 import baresip.runtime as runtime_module
-from baresip import Account, Config, NoCaCertificatesError, Runtime, UserAgent
+from baresip import Account, BaresipError, Config, NoCaCertificatesError, Runtime, UserAgent
 from baresip.config import discover_ca, sip_ca_file
 
 
@@ -212,6 +213,36 @@ def test_a_ca_directory_whose_path_has_a_space_is_gathered_into_a_file(
     with open(stack_value(text, "sip_cafile")) as f:
         assert f.read() == PEM.format("ONE") + PEM.format("TWO")
     runtime._remove_conf_dir()
+
+
+async def test_a_start_that_is_refused_leaves_no_ca_file_behind(
+    no_ca_anywhere, monkeypatch, tmp_path
+):
+    platform, private = tmp_path / "platform.pem", tmp_path / "private.pem"
+    platform.write_text("PUBLIC CAS\n")
+    private.write_text("PRIVATE CA\n")
+    platform_paths(monkeypatch, cafile=str(platform))
+    monkeypatch.setenv("SIP_CA_FILE", str(private))
+    made: list[str] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        made.append(path)
+        return fd, path
+
+    monkeypatch.setattr(runtime_module.tempfile, "mkstemp", recording_mkstemp)
+    first = Runtime()
+    await first.start(Config(net_interface="127.0.0.1"))
+    try:
+        second = Runtime()
+        with pytest.raises(BaresipError, match="another Runtime is active"):
+            await second.start(Config(net_interface="127.0.0.1"))
+    finally:
+        await first.close()
+
+    assert len(made) == 2
+    assert not any(os.path.exists(path) for path in made)
 
 
 def test_paths_without_spaces_are_handed_over_as_they_are(no_ca_anywhere, monkeypatch, tmp_path):
