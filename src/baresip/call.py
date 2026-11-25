@@ -217,6 +217,9 @@ def _carried_header_lines(request: "TransferRequest", headers: dict | None) -> s
 
 
 _TRANSFER_TIMEOUT = 60.0
+# How long a hold or resume waits for an earlier renegotiation to be
+# answered before it is sent.
+_REFRESH_WAIT = 5.0
 _DTMF_DIGITS = "0123456789ABCD*#"
 _DTMF_TONE_MS = 100
 
@@ -690,24 +693,27 @@ class Call:
         arrives as events. Already-held calls return immediately. The far
         end holding *us* is :attr:`remote_on_hold`, not this.
 
+        A renegotiation still being answered, such as a resume sent just
+        before, is waited out for a few seconds.
+
         Raises:
             StaleHandleError: the call is already gone.
             BaresipError: the call is not established, another session
-                refresh is in flight (retry shortly), or the stack
-                refused.
+                refresh stayed in flight, or the stack refused.
         """
         await self._set_hold(True)
 
     async def resume(self) -> None:
         """Take the call off hold (the counterpart of :meth:`hold`).
 
-        A call that is not held returns immediately.
+        A call that is not held returns immediately. The hold before it
+        may still be on its way to being answered; it is waited out for a
+        few seconds.
 
         Raises:
             StaleHandleError: the call is already gone.
             BaresipError: the call is not established, another session
-                refresh is in flight (retry shortly), or the stack
-                refused.
+                refresh stayed in flight, or the stack refused.
         """
         await self._set_hold(False)
 
@@ -800,6 +806,20 @@ class Call:
         verb = "hold" if hold else "resume"
         if self._on_hold == hold:
             return
+        # The stack sends one renegotiation at a time, and hold() and
+        # resume() return when theirs is sent, so the one before can
+        # still be awaiting its answer. That passes in a round trip.
+        deadline = asyncio.get_running_loop().time() + _REFRESH_WAIT
+        while not await self._send_hold(hold, verb):
+            if asyncio.get_running_loop().time() >= deadline:
+                raise BaresipError(
+                    f"{verb} not sent: a session refresh stayed in flight for {_REFRESH_WAIT:g} s"
+                )
+            await asyncio.sleep(0.05)
+        self._on_hold = hold
+
+    async def _send_hold(self, hold: bool, verb: str) -> bool:
+        """Send the hold or resume re-INVITE; False when another is in flight."""
         if self._state is not CallState.ESTABLISHED:
             raise BaresipError(f"{verb} requires an established call")
 
@@ -808,8 +828,7 @@ class Call:
         # and then a retry would be a no-op against the already-flipped
         # flag. The re-INVITE's one observable is the CALL_LOCAL_SDP
         # "offer" event, emitted before the command completes; when it is
-        # missing, flip the state back and report, so a later retry
-        # starts clean.
+        # missing, flip the state back, so the next attempt starts clean.
         saw_offer = False
 
         def listener(event: StackEvent) -> None:
@@ -831,14 +850,13 @@ class Call:
         if ev == lib.BP_EV_STALE_HANDLE:
             raise StaleHandleError("call no longer exists")
         if payload is not None:
-            errno = json.loads(payload).get("errno", 0)
-            raise BaresipError(f"{verb} failed: {os.strerror(errno)}")
+            data = json.loads(payload)
+            if data.get("error") == "busy":
+                return False
+            raise BaresipError(f"{verb} failed: {os.strerror(data.get('errno', 0))}")
         if not saw_offer:
             await self._runtime.cmd(lib.BP_CMD_CALL_HOLD, args=f"{self._handle} {int(not hold)}")
-            raise BaresipError(
-                f"{verb} not sent: a session refresh is already in flight; retry shortly"
-            )
-        self._on_hold = hold
+        return saw_offer
 
     async def transfer(
         self, uri: str, *, headers: dict | None = None, timeout: float = _TRANSFER_TIMEOUT

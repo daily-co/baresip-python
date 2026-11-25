@@ -26,7 +26,7 @@ import pytest
 
 pytest.importorskip("baresip._native")
 
-from baresip import Account, AudioRestarted, BaresipError, CallState, Config, Event
+from baresip import Account, AudioRestarted, CallState, Config, Event
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
 
@@ -164,22 +164,6 @@ async def audio_arrives(call, timeout: float = 3.0) -> bool:
     return len(call.audio.read(1 << 20)) > 0
 
 
-async def once_settled(change) -> None:
-    """Hold or resume once the previous renegotiation has been answered.
-
-    ``hold()`` and ``resume()`` return when their offer is sent, so the
-    next one can arrive while the answer is still on its way.
-    """
-    for _ in range(40):
-        try:
-            return await change()
-        except BaresipError as error:
-            if "in flight" not in str(error):
-                raise
-            await asyncio.sleep(0.05)
-    await change()
-
-
 async def until(condition, timeout: float = 3.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while not condition():
@@ -212,7 +196,7 @@ async def test_a_hold_from_the_answering_side_arrives(routed, form):
 
     await received.hold()
     await until(lambda: placed.remote_on_hold)
-    await once_settled(received.resume)
+    await received.resume()
     await until(lambda: not placed.remote_on_hold)
 
 
