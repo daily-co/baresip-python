@@ -20,7 +20,7 @@
 # Bench (local FreeSWITCH in docker, see bench/README.md):
 #   bench-up / bench-logs / bench-proxy-logs / bench-down
 
-.PHONY: native ext ext-san ext-tsan test test-san test-tsan check format bench-up bench-logs bench-proxy-logs bench-down
+.PHONY: native ext ext-cov cov-clean cov-unit cov-bench cov-report coverage ext-san ext-tsan test test-san test-tsan check format bench-up bench-logs bench-proxy-logs bench-down
 
 format:
 	uv run ruff format src scripts tests
@@ -34,6 +34,40 @@ ext:
 
 test:
 	uv run pytest tests/unit
+
+# Coverage of the Python package and the C sources in src/_native, by the
+# unit suite; CI holds it against tests/coverage-baseline.json. The
+# extension is rebuilt with gcov instrumentation, so `make ext` afterwards
+# restores the ordinary one. `make cov-bench` between cov-unit and
+# cov-report adds the bench suite to the same counts.
+GCOV ?= $(if $(filter Darwin,$(shell uname)),xcrun llvm-cov gcov,gcov)
+COV_RUN = uv run coverage run --append --branch --source=src/baresip -m pytest
+COV_CHECK ?= --check
+
+ext-cov:
+	rm -rf build/ffi
+	BP_COVERAGE=1 uv run python src/_native/build_ffi.py
+
+cov-clean:
+	rm -f .coverage
+	find build/ffi -name '*.gcda' -delete
+	mkdir -p build/coverage
+
+cov-unit:
+	$(COV_RUN) tests/unit
+
+cov-bench:
+	$(COV_RUN) tests/integration -m bench
+
+cov-report:
+	uv run coverage json -q -o build/coverage/python.json
+	uv run gcovr --root . --filter 'src/_native/' --gcov-executable "$(GCOV)" \
+		--json-summary build/coverage/c.json build/ffi
+	uv run python scripts/coverage_report.py --python build/coverage/python.json \
+		--c build/coverage/c.json --baseline tests/coverage-baseline.json \
+		--output build/coverage/report.md $(COV_CHECK)
+
+coverage: ext-cov cov-clean cov-unit cov-report
 
 ext-san:
 	BP_SANITIZE=address,undefined uv run python src/_native/build_ffi.py

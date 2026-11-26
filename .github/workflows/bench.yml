@@ -47,3 +47,27 @@ jobs:
           path: build/bench-logs
       - run: make bench-down
         if: always()
+
+  # Coverage by the unit and bench suites together, which neither shows
+  # alone. Reported in the run's summary and held against nothing: the
+  # gate is the unit suite's, in ci.yml. Nightly only.
+  coverage:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libopus-dev libvpx-dev libv4l-dev libasound2-dev
+      - run: uv sync --group dev
+      - run: make native
+      - run: make ext-cov cov-clean cov-unit
+      - run: make bench-up
+      - run: make cov-bench
+      - run: make cov-report COV_CHECK=
+      - run: sed 's/(unit suite)/(unit and bench suites)/' build/coverage/report.md >> "$GITHUB_STEP_SUMMARY"
+      - run: make bench-down
+        if: always()

@@ -8,6 +8,7 @@ wheelhouse/
 .venv/
 .pytest_cache/
 .ruff_cache/
+.coverage
 
 # Native build outputs
 .native/

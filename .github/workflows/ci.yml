@@ -31,6 +31,49 @@ jobs:
         run: TORTURE_SCALE=0.1 uv run pytest tests/torture -m torture
       - run: make check
 
+  # Coverage of the Python package and the C sources by the unit suite,
+  # held against tests/coverage-baseline.json: a change may not lower it.
+  # Its own job and its own build, because the extension is instrumented
+  # for gcov and nothing else should be tested against that.
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libopus-dev libvpx-dev libv4l-dev libasound2-dev
+      - run: uv sync --group dev
+      - run: make native
+      - run: make ext-cov cov-clean cov-unit
+      - name: Report
+        id: report
+        run: make cov-report
+        continue-on-error: true
+      - name: Add the report to the run's summary
+        run: cat build/coverage/report.md >> "$GITHUB_STEP_SUMMARY"
+      # One comment per pull request, replaced on every push.
+      - name: Comment on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr=$(gh pr list --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number')
+          [ -n "$pr" ] || exit 0
+          old=$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- coverage-report -->")) | .id' | head -1)
+          if [ -n "$old" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$old" -F body=@build/coverage/report.md > /dev/null
+          else
+            gh pr comment "$pr" --body-file build/coverage/report.md
+          fi
+      - name: Fail when coverage dropped
+        if: steps.report.outcome == 'failure'
+        run: exit 1
+
   # The unit suite again, under an ASan+UBSan-instrumented extension with
   # leak detection: memory errors in the C sources do not announce
   # themselves in ordinary runs.

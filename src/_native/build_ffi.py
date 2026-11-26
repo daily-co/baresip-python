@@ -280,6 +280,13 @@ if _sanitize:
     ]
     _extra_link_args += [f"-fsanitize={_sanitize}"]
 
+# BP_COVERAGE=1 instruments the shim sources for gcov; `make coverage`
+# reads the counts. Never set for a build that ships or that other
+# checks run against.
+if os.environ.get("BP_COVERAGE"):
+    _extra_compile_args += ["--coverage", "-g"]
+    _extra_link_args += ["--coverage"]
+
 ffi.set_source(
     "baresip._native",
     # The entire C surface visible to Python is shim.h — never a raw

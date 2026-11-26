@@ -51,6 +51,9 @@ dev = [
     "setuptools>=69",
     # Only the video example's color preview; the library never imports it.
     "numpy>=1.26",
+    # `make coverage`: the Python package and the C sources.
+    "coverage>=7.6",
+    "gcovr>=8",
 ]
 
 [tool.setuptools]
