@@ -43,6 +43,7 @@ every patch to the pinned commit.
 |---|---|---|---|
 | `re/0001-sip-sips-next-hop-over-tls.patch` | Sends a request whose next hop is a `sips:` URI over TLS; upstream refuses it with `ENOSYS`. | Flexisip (sip.linphone.org) Record-Routes with `sips:` and OpenAI's SIP endpoint answers with a `sips:` Contact, so without it no ACK, BYE or re-INVITE goes out on those paths. Upstream declined the change ([re#1647](https://github.com/baresip/re/pull/1647), [re#1659](https://github.com/baresip/re/issues/1659)). | Upstream accepts `sips:` next hops. |
 | `re/0002-sipsess-warn-on-unsent-bye.patch` | Logs a warning when a session's BYE cannot be sent or is not delivered. | The error was dropped in three places, so a hang-up that never reached the far end left no trace. Offered upstream. | A release includes it. |
+| `re/0003-sip-tls-prove-dialog-host-on-ip-next-hop.patch` | A request inside a call whose next hop is given by IP address, sent over a new TLS connection, accepts a server certificate valid for that address or for the host name the call was configured with. Upstream checks the address only. | Proxies Record-Route with a bare address and certificates name hosts, so once a call's connection had closed its BYE, re-INVITE or REFER was never sent. Not yet offered upstream. | A release verifies such a connection against the dialog's host. |
 
 A patch is a standing cost: every bump has to check that it still applies and is still
 needed. Add one only for a fix upstream has declined or not yet released, name its origin in
