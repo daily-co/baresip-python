@@ -80,6 +80,17 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   the error. `sip_cafile`, `sip_capath` or `sip_verify_server` in
   `extra_config_text` override all of this.
 
+  A proxy on a call's route often gives itself as a bare IP address. A
+  request inside the call that needs a new connection to it (after the first
+  one closed, or to another node of the service) accepts a certificate valid
+  for that address or for the host name the call was configured with: the
+  name dialled or the outbound proxy, or, for a call a registered agent
+  receives, the registrar's name. Such a connection sends that name as the
+  TLS server name (SNI), where a connection to an address sent none. Not covered, so that such a request is not
+  sent once the connection has closed: a call dialled by IP address whose
+  server's certificate lacks the address, a call received on a connection the
+  far end opened, and a route giving a host name the certificate lacks.
+
 - The bundled baresip and libre move from v4.10.0 to v4.13.0. No API of this
   package changes. What a call can show differently:
   - Opus conceals lost packets (PLC) instead of playing a gap.
