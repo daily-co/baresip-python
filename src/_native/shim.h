@@ -46,8 +46,20 @@
  * or BYE is issued; the CALL_CLOSED stack event follows immediately and
  * is what invalidates the handle. */
 #define BP_CMD_CALL_ANSWER 9
-#define BP_CMD_CALL_REJECT 10 /* answers 486 Busy Here */
+/* End a call. Args: first line "HANDLE [STATUS]", second line a reason
+ * phrase, every further line one header ("Name: value") to send with
+ * what ends the call; all but the handle are optional.
+ *
+ * REJECT answers an incoming, unanswered call with STATUS and the reason
+ * phrase (486 Busy Here when neither is given). HANGUP ends the call
+ * whatever its state: BYE once it is answered, a rejection before, a
+ * CANCEL for an outgoing call nobody answered yet. The headers travel on
+ * the BYE or the rejection; a CANCEL carries none. A header block longer
+ * than BP_CLOSE_HEADERS_MAX completes with {"error":"headers_too_long"}
+ * and leaves the call as it was. */
+#define BP_CMD_CALL_REJECT 10
 #define BP_CMD_CALL_HANGUP 11
+#define BP_CLOSE_HEADERS_MAX 2048
 
 /* Dial out. Args: first line "HANDLE V URI", where V shapes the video
  * offer: 0 = no video stream at all, 1 = sendrecv (VP8, frames through
@@ -66,14 +78,17 @@
  * duration the far end perceives — is the caller's. */
 #define BP_CMD_CALL_SEND_DIGIT 13
 
-/* Hold or resume. Args: "HANDLE H" where H=1 holds, 0 resumes. Completes
- * when call_hold returns; the re-INVITE itself is confirmed only by the
+/* Hold or resume. Args: "HANDLE H" where H=1 holds, 0 resumes. Answers
+ * {"error":"busy"}, changing nothing, while a renegotiation awaits its
+ * answer. Otherwise completes when call_hold returns; the re-INVITE itself is confirmed only by the
  * CALL_LOCAL_SDP "offer" stack event, because the stack silently skips
  * the re-INVITE (and still returns 0) while another session refresh is
  * in flight. The peer's answer arrives as events. */
 #define BP_CMD_CALL_HOLD 14
 
-/* Blind transfer. Args: "HANDLE URI". Completes when the in-dialog REFER
+/* Blind transfer. Args: "HANDLE URI", or "HANDLE USER\nATTACHED" for a
+ * bare user part with headers to attach (already in escaped
+ * "name=value&..." form). Completes when the in-dialog REFER
  * is issued; the outcome arrives as events — CALL_TRANSFER_FAILED with
  * "CODE reason" text, or, on success, CALL_CLOSED with the stack's exact
  * text "Call transfered" (the transferred call ends; there is no
@@ -91,10 +106,10 @@
 /* Act on a received transfer request (the CALL_TRANSFER event). The
  * stack has already 202-accepted the REFER by the time the event is
  * reported, so these speak through the implicit subscription's NOTIFY
- * sipfrags. ACCEPT args: "HANDLE RAW_REFER_TO" (rest of line) — dials
+ * sipfrags. ACCEPT args: "HANDLE RAW_REFER_TO[\nName: value...]" — dials
  * the target with the xcall linkage so the core ties the original
- * leg's fate to the new call; DONE payload {"handle":N} names the new
- * call. REJECT args: "HANDLE STATUS" — sends the final failing sipfrag
+ * leg's fate to the new call, which carries the header lines given;
+ * DONE payload {"handle":N} names the new call. REJECT args: "HANDLE STATUS" — sends the final failing sipfrag
  * (out-of-range statuses fall back to 603) and the call continues. */
 #define BP_CMD_CALL_TRANSFER_ACCEPT 17
 #define BP_CMD_CALL_TRANSFER_REJECT 18
@@ -177,11 +192,23 @@
  * "transmit:" or "receive:". */
 #define BP_EV_AUDIO_WARNING 900
 
+/* BP_EV_CALL_INFO: a SIP INFO request arrived on a call. Every one is
+ * answered 200 OK and reported, whether or not the application listens;
+ * DTMF relay (application/dtmf-relay) is the stack's own and arrives as
+ * DTMF events instead. A body larger than BP_INFO_BODY_MAX is refused
+ * (488) and not reported: the event channel could not carry it.
+ * Payload: {"call":N,"text":content type,"body":base64 of the body}. */
+#define BP_EV_CALL_INFO 901
+#define BP_INFO_BODY_MAX 8192
+
 /* The stack's event numbering as actually compiled, for the cross-check
  * against the Python side: the numbers are bare enum positions upstream
  * has historically inserted into, so a mismatch after a version bump must
  * fail a test — not silently relabel every event. */
 int bp_bevent_max(void);
+/* The stack's number for "media secured", the first field of a
+ * CALL_MENC event's text ("<number>,<stream>,<suite>"). */
+int bp_menc_event_secure(void);
 const char *bp_bevent_str(int ev);
 
 /* Severity of a native log line. The stack underneath has two logging

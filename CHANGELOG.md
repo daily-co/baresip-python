@@ -4,6 +4,128 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
+## [0.7.0] - 2026-11-21
+
+### Added
+
+- `Account(media_encryption="none" | "srtp")`: `"srtp"` encrypts every call
+  with SRTP (SDES keys) and refuses a received call that offers none.
+  `Call.media_encrypted` reports whether a call's audio is encrypted.
+- `Call.reject(status=486, reason=None, headers=None)`: a refusal carries the
+  status the application chooses (300-699), its standard reason phrase or
+  one supplied, and custom headers. `Call.hangup(headers=None)`: custom
+  headers on the BYE, or on the rejection of a call not yet answered. With no
+  arguments both behave as before.
+- `Call.transfer(uri, headers=None)`: context for the party a transfer calls,
+  such as `User-to-User`, attached to the transfer target. A peer's transfer
+  request exposes the context of its target as `TransferRequest.headers`, and
+  `Call.accept_transfer(headers=None)` sets it on the call it places, with
+  the headers given added to it.
+- `Call.on_info` / `Call.off_info` and `InfoEvent`: a SIP INFO request
+  received on a call is delivered with its content type and raw body. DTMF
+  sent as INFO keeps arriving through `on_dtmf`.
+- `NoCaCertificatesError`: raised for a TLS account or dial target when the
+  runtime found no CA certificates to verify servers with.
+
+### Changed
+
+- **A received call that offers SRTP is accepted and encrypted** on an account
+  with no encryption configured. Until now it was answered `488 Not
+  Acceptable Here` before the application saw it. When the caller offers both
+  an SRTP and an unencrypted audio section, the SRTP one is taken.
+
+- **A transfer target is sent in angle brackets, and an accepted transfer
+  carries the target's headers.** `Call.transfer` encloses a `sip:` or
+  `sips:` target in angle brackets, which an address with parameters or
+  attached headers needs to be read correctly. A call placed for a peer's
+  transfer request, by `accept_transfer` or by the `"auto"` transfer
+  policy, now carries the `User-to-User` and `X-` headers attached to the
+  target; until now every attached header was discarded. The target's other
+  headers are still left out.
+
+- **An unencrypted call offered in the RTCP-feedback profile is accepted.**
+  An offer of `RTP/AVPF` was answered `488 Not Acceptable Here`; the Linphone
+  app offers it first and only then falls back, so its unencrypted calls took
+  seconds longer to connect. It is now answered in `RTP/AVPF`. An account with
+  `media_encryption="srtp"` refuses it, as it does any unencrypted offer.
+
+- **Received video larger than `Config.video_size` is reported.** Such frames
+  are dropped, as before; the first one on a call now logs a warning naming
+  both sizes.
+
+- **`hold()` and `resume()` wait for a renegotiation that is still being
+  answered.** Both return when their re-INVITE is sent, so a `resume()`
+  straight after a `hold()` could arrive while the hold was still awaiting its
+  answer, and raised "a session refresh is already in flight; retry shortly".
+  They now wait up to five seconds for it and then send.
+
+- **A call refused before the application sees it is reported.** The stack
+  answers some INVITEs itself: an offer nothing in the account matches (488),
+  a call past `Config.max_concurrent_calls` (486), an unsupported extension.
+  Each now logs a warning naming the caller and the reason, and for a refused
+  offer its media sections.
+
+- **A SIP INFO request is answered `200 OK`.** Until now an INFO with a body
+  other than DTMF relay was answered `488 Not Acceptable Here`. A body over
+  8 KiB is still refused with `488`.
+
+- **TLS servers are verified.** A TLS connection now requires the server's
+  certificate to chain to a trusted CA and to name the host connected to;
+  until now no certificate was checked. The CA certificates are found at
+  start: `SSL_CERT_FILE`, `SSL_CERT_DIR`, the platform's locations as
+  Python's `ssl` module reports them, then `certifi` if installed. A server
+  with a private or self-signed certificate needs `SIP_CA_FILE` pointing at
+  its CA, which the SIP stack then trusts in addition. With no CA certificates found, TLS is disabled and UDP and TCP are
+  unaffected. A rejected certificate fails registration with the reason in
+  the error. `sip_cafile`, `sip_capath` or `sip_verify_server` in
+  `extra_config_text` override all of this.
+
+  A proxy on a call's route often gives itself as a bare IP address. A
+  request inside the call that needs a new connection to it (after the first
+  one closed, or to another node of the service) accepts a certificate valid
+  for that address or for the host name the call was configured with: the
+  name dialled or the outbound proxy, or, for a call a registered agent
+  receives, the registrar's name. Such a connection sends that name as the
+  TLS server name (SNI), where a connection to an address sent none. Not covered, so that such a request is not
+  sent once the connection has closed: a call dialled by IP address whose
+  server's certificate lacks the address, a call received on a connection the
+  far end opened, and a route giving a host name the certificate lacks.
+
+- The bundled baresip and libre move from v4.10.0 to v4.13.0. No API of this
+  package changes. What a call can show differently:
+  - Opus conceals lost packets (PLC) instead of playing a gap.
+  - The transmit RTP timestamp advances while there is nothing to send, so
+    audio after a pause is not heard late by the far end.
+  - Padding on received RTP packets is stripped before decoding.
+  - The adaptive jitter buffer adds three times the measured jitter as
+    margin, up from two; the fixed buffer is unchanged.
+  - The stack no longer reads `audio_buffer_mode` or `audio_silence`; a
+    line setting either in `extra_config_text` has no effect.
+
+### Fixed
+
+- A placed call that the far end refused straight away could report "not
+  established within N s" in place of the refusal's status. The refusal
+  could be delivered before `dial()` had built the call, and was dropped.
+  The same held for the call an accepted transfer places.
+
+- **An answered call is no longer renegotiated a moment after it is
+  established.** A call answered without video was sent a re-INVITE, with the
+  same media as the answer, 50 to 150 ms after the answer. It restarted the
+  audio streams, and a hold sent in that moment was refused as colliding
+  with it.
+
+- Calls through a proxy or to a peer that uses `sips:` addresses now work.
+  A request whose next hop was a `sips:` URI, from a Record-Route (Flexisip,
+  sip.linphone.org) or from the peer's Contact (OpenAI's SIP endpoint), was
+  never sent: a call placed that way did not complete, and a hang-up, hold or
+  transfer did not reach the far end. Such a request now goes over TLS, and
+  `dial("sips:...")` works. The fix is a patch carried on the bundled libre
+  (docs/UPGRADING.md, "Carried patches").
+- A hang-up that cannot be sent, or is sent and not delivered, is logged as
+  a warning on `baresip.native`. It used to fail without a trace, leaving the
+  far end in a call this side had left.
+
 ## [0.6.1] - 2026-11-20
 
 ### Fixed

@@ -4,7 +4,7 @@ Python bindings for the [baresip](https://github.com/baresip/baresip) SIP stack 
 embeddable SIP user agent for Python applications: registration, inbound and outbound calls,
 programmatic PCM audio and VP8 video access, and DTMF, with an asyncio-native API.
 
-> Current release: `v0.6.1` on PyPI. Versioning is SemVer with the 0.x caveat: a minor
+> Current release: `v0.7.0` on PyPI. Versioning is SemVer with the 0.x caveat: a minor
 > version may break the API, and every break is called out in the CHANGELOG.
 
 ## What this is
@@ -117,6 +117,25 @@ SIP_LISTEN=127.0.0.1:5070 uv run python examples/08_video_call.py
 SIP_LISTEN=127.0.0.1:5072 SIP_DIAL=sip:alice@127.0.0.1:5070 uv run python examples/08_video_call.py
 ```
 
+**[10 — encrypted calls](examples/10_encrypted_call.py).** SRTP with one account setting,
+and a call that reports what it got. Answer calls and follow each caller's offer, or set
+`SIP_ENCRYPTION=srtp` to accept and place only encrypted calls; it registers over TLS, so
+the SRTP keys stay private:
+
+```
+SIP_CA_FILE=bench/certs/cert.pem uv run python examples/10_encrypted_call.py
+docker exec baresip-bench-freeswitch fs_cli -x "originate {rtp_secure_media=mandatory}user/1001 &echo()"
+```
+
+**[11 — transfer with context](examples/11_transfer_with_context.py).** A bot hands a caller
+to a human agent and passes what it learned as a `User-to-User` header, so the agent does not
+ask again. It plays the bot, the caller's phone and the agent desk in one process, with no
+server:
+
+```
+uv run python examples/11_transfer_with_context.py
+```
+
 ## Audio and device selection
 
 Audio drivers are chosen when the runtime starts — `Config(audio_source=...,
@@ -134,10 +153,73 @@ Outbound INVITEs take custom headers directly: `ua.dial(uri, headers={...})` (ex
 On the receiving side, `Config(expose_headers=[...])` allowlists header names whose values
 then ride along on call events.
 
-One deliberate absence: the `100 Trying` that answers an incoming INVITE cannot carry
-custom headers. The stack sends it automatically, before the application ever sees the
+The messages that refuse or end a call take them too, and a refusal takes its status:
+
+```python
+await call.reject(status=503, headers={"Retry-After": "30"})        # try another instance
+await call.reject(status=480, reason="Agent on a break")
+await call.hangup(headers={"Reason": 'Q.850;cause=16;text="resolved"', "X-Queue": "sales"})
+```
+
+A switch or contact-center platform routes on that status: 486, the default, says this
+endpoint is busy; 503 that the call should go elsewhere. `hangup(headers=...)` puts the
+headers on the BYE of an answered call, or on the rejection of an incoming one not yet
+answered; an outgoing call that nobody answered is cancelled, and a cancellation carries none.
+
+Two deliberate absences. The `100 Trying` that answers an incoming INVITE cannot carry
+custom headers: the stack sends it automatically, before the application ever sees the
 call — and it is a hop-by-hop response, so a header on it would die at the first proxy
-anyway. Headers on the final response (answer/reject) are planned for a later release.
+anyway. Nor can the answer (`200 OK`): the stack has no way to add them yet.
+
+## Call context on a transfer
+
+A bot that hands a caller to a human agent or a queue can pass what it learned, so the
+caller is not asked again. The context travels with the transfer, attached to the address
+the far end is told to call:
+
+```python
+await call.transfer(
+    "sip:support@pbx.example.com",
+    headers={"User-to-User": "56a390f3d2b7310023a2;encoding=hex", "X-Case": "1234"},
+)
+```
+
+The far end sets those headers on the call it places, and the party it calls reads them as
+ordinary headers. `User-to-User` is the standard one; contact-center platforms such as
+Genesys and Twilio read it, usually as hex data ending in `;encoding=hex`. The library does
+the escaping the address form needs.
+
+Whether the context arrives is the far end's choice. Our own agents carry it, which the
+test suite checks through a proxy. FreeSWITCH, as the party being transferred, places the
+new call without it unless its dialplan forwards it; other switches and carriers vary.
+
+The agent a call is transferred *to* reads the context from the INVITE it receives: list the
+header names in `Config(expose_headers=["User-to-User", ...])`, and they appear in that call's
+`headers`, like any exposed header. This setting plays no part in accepting a transfer.
+
+When a peer asks one of our calls to transfer, `TransferRequest.headers` holds the context
+attached to its target, and `call.accept_transfer()` sets it on the call it places.
+`accept_transfer(headers={...})` adds headers to it; a name the request also has takes the
+value given, and a value of `None` leaves that header out.
+Only `User-to-User` and `X-` headers are taken from a transfer target, which comes from the
+far end: an identity or routing header attached to it is left out. Example 11 shows all three
+parties, and
+[docs/TRANSFER.md](docs/TRANSFER.md) the model behind them.
+
+## SIP INFO
+
+A PBX or contact-center platform can send a SIP INFO inside a call to pass an application
+event: a recording signal, a queue or agent event. `call.on_info(callback)` delivers each
+one as an `InfoEvent` with the request's content type and its body, as raw bytes:
+
+```python
+call.on_info(lambda info: print(info.content_type, info.body))
+```
+
+Every INFO is answered `200 OK`, whether or not the application listens, so the sender never
+gets an error for an event the application ignores. DTMF sent as INFO is not reported
+here; it arrives through `call.on_dtmf` like any other digit. A body over 8 KiB is refused
+with `488`. Sending INFO is not available yet.
 
 ## Transfers and hold
 
@@ -211,6 +293,49 @@ See [SECURITY.md](SECURITY.md) — how to report a vulnerability, which versions
 fixes, and a short threat-model note for operators: a registered user agent is a server as
 well as a client, and a publicly addressable one will receive unsolicited INVITEs and
 scanner traffic.
+
+### TLS
+
+Every TLS connection verifies the server: its certificate must chain to a trusted CA and
+name the host connected to. The CA certificates are found when the runtime starts, first
+hit wins:
+
+1. `SSL_CERT_FILE`, then `SSL_CERT_DIR`;
+2. the file, then the directory, Python's `ssl` module reports for the platform;
+3. the `certifi` package, when installed.
+
+For a server with a private or self-signed certificate, point `SIP_CA_FILE` at its CA
+certificate (a PEM file). It is trusted in addition to the certificates found above, and by
+the SIP stack alone: public servers keep verifying, and nothing else in the process comes
+to trust the private CA. A `SIP_CA_FILE` that does not name a file is an error at start.
+The runtime logs what it verifies against. When no CA certificates are found, TLS is
+disabled (UDP and TCP are unaffected) and a TLS account or target raises
+`NoCaCertificatesError`. A rejected certificate fails the registration with the reason
+(`self-signed certificate`, `hostname mismatch`, ...) in the error.
+
+There is no switch for verification among the `Config` fields. A caller that sets
+`sip_cafile`, `sip_capath` or `sip_verify_server` in `Config(extra_config_text=...)`
+takes TLS trust into their own hands, and nothing above is applied.
+
+### Media encryption
+
+Call audio and video can be encrypted with SRTP, the form carriers, hosted PBXs and
+contact-center platforms require. One account field decides it:
+
+| `Account(media_encryption=...)` | Calls placed | Calls received |
+|---|---|---|
+| `"none"` (default) | unencrypted | follow the caller: unencrypted, or SRTP when the caller offers it |
+| `"srtp"` | SRTP, required | SRTP only; an unencrypted call is refused with `488` |
+
+So a default account answers a caller that requires SRTP with no configuration, and
+`"srtp"` guarantees that nothing is ever sent in the clear. `call.media_encrypted` reports
+what a call ended up with.
+
+The SRTP keys are exchanged in the call setup (SDES), so they are only as private as the
+signalling: use `transport="tls"` with `"srtp"`. The runtime warns when it is not. DTLS-SRTP
+and ZRTP have no typed setting; a `mediaenc=` entry in `extra_params` selects the stack's
+mode directly and takes the place of this field.
+Example 10 is the runnable version.
 
 ## API stability policy
 

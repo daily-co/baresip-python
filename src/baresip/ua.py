@@ -21,11 +21,18 @@ import re
 from typing import ClassVar
 
 from baresip._native import lib
-from baresip.call import Call, CallState, _parse_refer_to
+from baresip.call import (
+    Call,
+    CallState,
+    _carried_header_lines,
+    _parse_refer_to,
+    header_lines,
+)
 from baresip.config import Account
 from baresip.errors import (
     BaresipError,
     DrainingError,
+    NoCaCertificatesError,
     NoLocalAddressError,
     RegistrationError,
     StaleHandleError,
@@ -37,9 +44,14 @@ from baresip.runtime import Runtime
 logger = logging.getLogger("baresip.ua")
 
 _REGISTER_TIMEOUT = 10.0
+# How long a failed TLS registration waits for the log line naming the
+# certificate problem.
+_TLS_REASON_WAIT = 0.25
 
 # regint=0 in an AOR disables registration in the stack.
 _REGINT_ZERO = re.compile(r";regint=0(?:;|$)")
+# An address or target that connects over TLS.
+_TLS_TARGET = re.compile(r"\bsips:|;transport=tls\b", re.IGNORECASE)
 
 _TRANSFER_POLICIES = ("manual", "auto", "reject")
 
@@ -71,6 +83,7 @@ class UserAgent:
         self._handle = handle
         self._registered = False
         self._registration_disabled = False
+        self._tls = False
         self._transfer_policy = "manual"
         self._transfer_call_callbacks: list = []
         self._listeners: dict = {}
@@ -119,6 +132,18 @@ class UserAgent:
                 f"transfer_policy must be one of {_TRANSFER_POLICIES}, got {transfer_policy!r}"
             )
         aor = account.aor() if isinstance(account, Account) else account
+        tls = _TLS_TARGET.search(aor) is not None
+        if tls and not runtime.tls_available:
+            raise NoCaCertificatesError(
+                "the account uses TLS, but no CA certificates were found to verify "
+                "the server with; set SIP_CA_FILE to a CA bundle, or install certifi"
+            )
+        if isinstance(account, Account) and account.requires_srtp and account.transport != "tls":
+            logger.warning(
+                "media_encryption='srtp' with transport=%r: the SRTP keys travel in the "
+                "call setup, unencrypted; use transport='tls' to keep them private",
+                account.transport,
+            )
         _, payload = await runtime.cmd(lib.BP_CMD_UA_ALLOC, args=aor)
         data = json.loads(payload)
         if "error" in data:
@@ -126,6 +151,7 @@ class UserAgent:
             detail = os.strerror(errno) if errno else data["error"]
             raise BaresipError(f"user agent allocation failed: {detail}")
         ua = cls(runtime, data["handle"])
+        ua._tls = tls
         # The stack silently does nothing on ua_register() for such an
         # account, so register() refuses up front instead of timing out.
         # The Account field is authoritative; raw AORs are checked by text.
@@ -169,8 +195,9 @@ class UserAgent:
             except TimeoutError:
                 raise RegistrationError(f"no registration outcome within {timeout:g} s") from None
         except RegistrationError as exc:
+            exc = await self._explain_tls_failure(exc)
             logger.error("registration failed: %s", exc, extra={"ua": self._handle})
-            raise
+            raise exc from None
         finally:
             self._runtime.unsubscribe(listener)
         self._registered = True
@@ -260,6 +287,11 @@ class UserAgent:
         """
         if not uri or any(c in uri for c in "\r\n"):
             raise ValueError("uri must be non-empty and single-line")
+        if _TLS_TARGET.search(uri) and not self._runtime.tls_available:
+            raise NoCaCertificatesError(
+                "the target uses TLS, but no CA certificates were found to verify "
+                "the server with; set SIP_CA_FILE to a CA bundle, or install certifi"
+            )
         if video not in self._VIDEO_DIRS:
             raise ValueError(
                 f"video must be a bool or one of "
@@ -267,34 +299,54 @@ class UserAgent:
             )
         if self._runtime.draining:
             raise DrainingError("runtime is draining; new calls are refused")
-        args = f"{self._handle} {self._VIDEO_DIRS[video]} {uri}"
-        for name, value in (headers or {}).items():
-            if not name or any(c in name for c in "\r\n: "):
-                raise ValueError(f"invalid header name {name!r}")
-            if any(c in str(value) for c in "\r\n"):
-                raise ValueError(f"header {name}: value must be single-line")
-            args += f"\n{name}: {value}"
-        ev, payload = await self._runtime.cmd(lib.BP_CMD_UA_CONNECT, args=args)
-        if ev == lib.BP_EV_STALE_HANDLE:
-            raise StaleHandleError("user agent no longer exists")
-        data = json.loads(payload)
-        if data.get("error") == "no_laddr":
-            host = data.get("host") or uri
-            raise NoLocalAddressError(
-                f"no local address toward {host}: no INVITE was sent. Loopback "
-                'targets need "net_interface 127.0.0.1" in the runtime '
-                "configuration (see examples/06_softphone.py)."
+        args = f"{self._handle} {self._VIDEO_DIRS[video]} {uri}{header_lines(headers)}"
+        # The call's handle comes back in the answer to this command, and
+        # the far end can refuse the call before this coroutine runs again:
+        # collect what arrives meanwhile, for the Call built below.
+        with self._runtime._events_meanwhile() as missed:
+            ev, payload = await self._runtime.cmd(lib.BP_CMD_UA_CONNECT, args=args)
+            if ev == lib.BP_EV_STALE_HANDLE:
+                raise StaleHandleError("user agent no longer exists")
+            data = json.loads(payload)
+            if data.get("error") == "no_laddr":
+                host = data.get("host") or uri
+                raise NoLocalAddressError(
+                    f"no local address toward {host}: no INVITE was sent. Loopback "
+                    'targets need "net_interface 127.0.0.1" in the runtime '
+                    "configuration (see examples/06_softphone.py)."
+                )
+            if "error" in data:
+                errno = data.get("errno")
+                detail = os.strerror(errno) if errno else data["error"]
+                raise BaresipError(f"dial failed: {detail}")
+            return Call(
+                self._runtime,
+                handle=data["handle"],
+                ua_handle=self._handle,
+                state=CallState.OUTGOING,
+                peer=uri,
+                missed=missed,
             )
-        if "error" in data:
-            errno = data.get("errno")
-            detail = os.strerror(errno) if errno else data["error"]
-            raise BaresipError(f"dial failed: {detail}")
-        return Call(
-            self._runtime,
-            handle=data["handle"],
-            ua_handle=self._handle,
-            state=CallState.OUTGOING,
-            peer=uri,
+
+    async def _explain_tls_failure(self, exc: RegistrationError) -> RegistrationError:
+        """Name the certificate problem behind a TLS registration failure.
+
+        The stack reports a rejected certificate as a transport-level
+        protocol error; the reason sits in its log, which a separate
+        thread delivers, hence the short wait for it.
+        """
+        if not self._tls or exc.status is not None:
+            return exc
+        deadline = asyncio.get_running_loop().time() + _TLS_REASON_WAIT
+        while (reason := self._runtime.tls_verify_error()) is None:
+            if asyncio.get_running_loop().time() >= deadline:
+                return exc
+            await asyncio.sleep(0.01)
+        return RegistrationError(
+            f"{exc}: the server's certificate was not accepted ({reason}). The "
+            "certificate must chain to a trusted CA and name the host connected to; "
+            "for a private CA, set SIP_CA_FILE to its certificate",
+            reason=reason,
         )
 
     def _registration_outcome(self, failure: str):
@@ -360,24 +412,28 @@ class UserAgent:
                 # is refused rather than guessed at.
                 await self._runtime.cmd(lib.BP_CMD_CALL_TRANSFER_REJECT, args=f"{event.call} 501")
                 return
-            ev, payload = await self._runtime.cmd(
-                lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{event.call} {request.raw}"
-            )
-            data = json.loads(payload) if payload else {}
-            if ev == lib.BP_EV_STALE_HANDLE or "error" in data:
-                logger.warning(
-                    "transfer policy could not execute the request: %s",
-                    data.get("error", "call gone"),
-                    extra={"call": event.call},
+            # As in dial(): the new call may end before it is built here.
+            with self._runtime._events_meanwhile() as missed:
+                ev, payload = await self._runtime.cmd(
+                    lib.BP_CMD_CALL_TRANSFER_ACCEPT,
+                    args=f"{event.call} {request.raw}{_carried_header_lines(request, None)}",
                 )
-                return
-            new_call = Call(
-                self._runtime,
-                handle=data["handle"],
-                ua_handle=self._handle,
-                state=CallState.OUTGOING,
-                peer=request.target,
-            )
+                data = json.loads(payload) if payload else {}
+                if ev == lib.BP_EV_STALE_HANDLE or "error" in data:
+                    logger.warning(
+                        "transfer policy could not execute the request: %s",
+                        data.get("error", "call gone"),
+                        extra={"call": event.call},
+                    )
+                    return
+                new_call = Call(
+                    self._runtime,
+                    handle=data["handle"],
+                    ua_handle=self._handle,
+                    state=CallState.OUTGOING,
+                    peer=request.target,
+                    missed=missed,
+                )
             logger.info("transfer request executed by policy", extra={"call": event.call})
             for callback in list(self._transfer_call_callbacks):
                 try:

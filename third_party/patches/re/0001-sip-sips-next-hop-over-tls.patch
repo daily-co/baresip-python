@@ -1,0 +1,74 @@
+sip: send a request whose next hop is a sips: URI over TLS
+
+libre refuses any request whose next hop is not a sip: URI
+(sip_request_alloc returns ENOSYS). Flexisip (sip.linphone.org)
+Record-Routes with <sips:host:5061;lr> and OpenAI's SIP endpoint answers
+with a sips: Contact, so on those paths nothing sent inside a dialog
+goes out: no ACK when calling, no BYE, no re-INVITE.
+
+A sips: next hop is accepted and reached over TLS (RFC 3261 19.1.2 and
+26.2.2). TLS is forced whatever transport the dialog is already on and
+whatever a transport parameter says, because a caller that reached the
+proxy over UDP, or a URI that picked up transport=udp from an account,
+would otherwise send to the TLS port in the clear. The transport is
+marked as chosen for every sips: next hop, a dialog already on TLS
+included: for a host name without a port the NAPTR and SRV lookup
+would otherwise choose a transport itself, and can choose UDP. Without
+a TLS transport the request fails with EPROTONOSUPPORT.
+
+Origin: based on https://github.com/baresip/re/pull/1647 by phgace
+("sip: send requests with a sips: route over TLS"), which upstream
+closed without merging ("We decided in the past not to add sips
+support"; see also https://github.com/baresip/re/issues/1659). That
+change took the dialog's transport as given and mapped only
+transport=tcp to TLS; this one forces TLS in every case.
+
+libre is BSD-3-Clause; this patch is offered under the same terms.
+
+--- a/src/sip/request.c
++++ b/src/sip/request.c
+@@ -646,12 +646,15 @@
+ {
+ 	struct sip_request *req;
+ 	struct pl pl;
++	bool sips;
+ 	int err;
+ 
+ 	if (!sip || !met || !uri || !route || !mb)
+ 		return EINVAL;
+ 
+-	if (pl_strcasecmp(&route->scheme, "sip"))
++	sips = !pl_strcasecmp(&route->scheme, "sips");
++
++	if (!sips && pl_strcasecmp(&route->scheme, "sip"))
+ 		return ENOSYS;
+ 
+ 	req = mem_zalloc(sizeof(*req), destructor);
+@@ -708,6 +711,27 @@
+ 		}
+ 
+ 		req->tp_selected = false;
++	}
++
++	/* A SIPS URI is reached over TLS (RFC 3261 19.1.2 and 26.2.2),
++	 * whatever transport the dialog is on or a transport parameter
++	 * names. The transport counts as chosen even when the dialog is
++	 * already on TLS: for a host name with no port the lookup would
++	 * otherwise pick a transport of its own, UDP among them */
++	if (sips) {
++
++		if (req->tp != SIP_TRANSP_TLS && req->tp != SIP_TRANSP_WSS) {
++
++			if (!sip_transp_supported(sip, SIP_TRANSP_TLS,
++						  AF_UNSPEC)) {
++				err = EPROTONOSUPPORT;
++				goto out;
++			}
++
++			req->tp = SIP_TRANSP_TLS;
++		}
++
++		req->tp_selected = true;
+ 	}
+ 
+ out:

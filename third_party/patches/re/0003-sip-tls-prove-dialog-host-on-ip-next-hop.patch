@@ -1,0 +1,581 @@
+sip: a TLS next hop given by IP address may prove the dialog's host name
+
+A request inside a dialog follows the dialog's route, and servers
+commonly name themselves there by a bare IP address (a Record-Route
+with an advertised address). When no connection to that address is
+open, a new TLS connection is verified against the IP address, which
+certificates rarely carry, so the request (a BYE, a re-INVITE, a REFER)
+is never sent.
+
+A dialog now keeps the host name this side configured for it:
+
+- a dialog this side creates takes the host of its initial route (the
+  outbound proxy or the target; its maddr when present), unless that is
+  an IP address;
+- a dialog created from a received request takes the name of the
+  dialog this side opened the request's TLS connection for.
+
+A connection carries a name only when it was opened for a dialog's own
+host or for an IP-address hop of that dialog; one opened to a host a
+peer named carries none. So the name is never taken from a peer's
+message, and it never changes.
+
+When a request of the dialog goes over TLS to a next hop given by IP
+address, a new connection accepts a certificate valid for the address,
+as before, or for that name, and sends the name as SNI, which no
+connection to an IP address did before (tls_set_verify_server_alt).
+Chain, trust and validity checks are unchanged. A next hop given by
+host name is verified against that name as before.
+
+X509_check_host() is deprecated from OpenSSL 4.1; the call in
+tls_verify_handler_alt() needs its successor when the build moves there.
+
+Origin: written for baresip-python; not yet offered upstream.
+libre is BSD-3-Clause; this patch is offered under the same terms.
+
+--- a/include/re_sip.h
++++ b/include/re_sip.h
+@@ -409,6 +409,7 @@ const char *sip_dialog_rtag(const struct sip_dialog *dlg);
+ uint32_t sip_dialog_lseq(const struct sip_dialog *dlg);
+ uint32_t sip_dialog_lseqinv(const struct sip_dialog *dlg);
+ enum sip_transp sip_dialog_tp(const struct sip_dialog *dlg);
++const char *sip_dialog_tls_host(const struct sip_dialog *dlg);
+ bool sip_dialog_established(const struct sip_dialog *dlg);
+ bool sip_dialog_cmp(const struct sip_dialog *dlg, const struct sip_msg *msg);
+ bool sip_dialog_cmp_half(const struct sip_dialog *dlg,
+@@ -434,6 +435,7 @@ bool sip_msg_hdr_has_value(const struct sip_msg *msg, enum sip_hdrid id,
+ bool sip_msg_xhdr_has_value(const struct sip_msg *msg, const char *name,
+ 			    const char *value);
+ struct tcp_conn *sip_msg_tcpconn(const struct sip_msg *msg);
++const char *sip_msg_tls_host(const struct sip_msg *msg);
+ void sip_msg_dump(const struct sip_msg *msg);
+ 
+ int sip_addr_decode(struct sip_addr *addr, const struct pl *pl);
+--- a/include/re_tls.h
++++ b/include/re_tls.h
+@@ -71,6 +71,8 @@ int tls_srtp_keyinfo(const struct tls_conn *tc, enum srtp_suite *suite,
+ const char *tls_cipher_name(const struct tls_conn *tc);
+ int tls_set_ciphers(struct tls *tls, const char *cipherv[], size_t count);
+ int tls_set_verify_server(struct tls_conn *tc, const char *host);
++int tls_set_verify_server_alt(struct tls_conn *tc, const char *ip,
++			      const char *name);
+ int tls_verify_client(struct tls_conn *tc);
+ 
+ int tls_get_issuer(struct tls *tls, struct mbuf *mb);
+--- a/src/sip/ctrans.c
++++ b/src/sip/ctrans.c
+@@ -220,7 +220,7 @@ static void retransmit_handler(void *arg)
+ 	tmr_start(&ct->tmre, timeout, retransmit_handler, ct);
+ 
+ 	err = sip_transp_send(&ct->qent, ct->sip, NULL, ct->tp, &ct->dst,
+-			      ct->host, ct->mb, connect_handler,
++			      ct->host, NULL, ct->mb, connect_handler,
+ 			      transport_handler, ct);
+ 	if (err) {
+ 		terminate(ct, err);
+@@ -325,7 +325,8 @@ static bool response_handler(const struct sip_msg *msg, void *arg)
+ 
+ int sip_ctrans_request(struct sip_ctrans **ctp, struct sip *sip,
+ 		       enum sip_transp tp, const struct sa *dst, char *met,
+-		       char *branch, char *host, struct mbuf *mb,
++		       char *branch, char *host, const char *tls_name,
++		       struct mbuf *mb,
+ 		       sip_conn_h *connh,
+ 		       sip_resp_h *resph, void *arg)
+ {
+@@ -354,7 +355,7 @@ int sip_ctrans_request(struct sip_ctrans **ctp, struct sip *sip,
+ 	ct->resph  = resph ? resph : dummy_handler;
+ 	ct->arg    = arg;
+ 
+-	err = sip_transp_send(&ct->qent, sip, NULL, tp, dst, host, mb,
++	err = sip_transp_send(&ct->qent, sip, NULL, tp, dst, host, tls_name, mb,
+ 			      connect_handler, transport_handler, ct);
+ 	if (err)
+ 		goto out;
+@@ -405,7 +406,7 @@ int sip_ctrans_cancel(struct sip_ctrans *ct)
+ 		goto out;
+ 
+ 	err = sip_ctrans_request(NULL, ct->sip, ct->tp, &ct->dst, cancel,
+-				 ct->branch, NULL, mb, NULL, NULL, NULL);
++				 ct->branch, NULL, NULL, mb, NULL, NULL, NULL);
+ 	if (err)
+ 		goto out;
+ 
+--- a/src/sip/dialog.c
++++ b/src/sip/dialog.c
+@@ -39,6 +39,9 @@ struct sip_dialog {
+ 	size_t rpos;
+ 	enum sip_transp tp;
+ 	uint32_t srcport;
++	char *tls_host;   /**< Host name this side configured for the
++			       dialog; NULL if it began by IP address.
++			       Set once, when the dialog is created. */
+ };
+ 
+ 
+@@ -57,6 +60,26 @@ static void destructor(void *arg)
+ 	mem_deref(dlg->rtag);
+ 	mem_deref(dlg->uri);
+ 	mem_deref(dlg->mb);
++	mem_deref(dlg->tls_host);
++}
++
++
++/*
++ * The host name of the first hop this side configured, which a later
++ * TLS connection of the dialog to an IP address may prove instead.
++ */
++static int tls_host_from_route(struct sip_dialog *dlg)
++{
++	struct pl pl;
++	struct sa sa;
++
++	if (msg_param_decode(&dlg->route.params, "maddr", &pl))
++		pl = dlg->route.host;
++
++	if (!pl_isset(&pl) || !sa_set(&sa, &pl, 0))
++		return 0;
++
++	return pl_strdup(&dlg->tls_host, &pl);
+ }
+ 
+ 
+@@ -142,6 +165,10 @@ int sip_dialog_alloc(struct sip_dialog **dlgp,
+ 		pl_set_str(&pl, dlg->uri);
+ 		err = uri_decode(&dlg->route, &pl);
+ 	}
++	if (err)
++		goto out;
++
++	err = tls_host_from_route(dlg);
+ 
+  out:
+ 	if (err)
+@@ -254,6 +281,16 @@ int sip_dialog_accept(struct sip_dialog **dlgp, const struct sip_msg *msg)
+ 		pl_set_str(&pl, dlg->uri);
+ 		err = uri_decode(&dlg->route, &pl);
+ 	}
++	if (err)
++		goto out;
++
++	/* A request that arrived on a TLS connection this side opened for
++	   a dialog of its own (a registration) belongs to the same
++	   server: the new dialog takes that dialog's host name. A
++	   connection the peer opened, or one opened to a host a peer
++	   named, carries none. */
++	if (sip_msg_tls_host(msg))
++		err = str_dup(&dlg->tls_host, sip_msg_tls_host(msg));
+ 
+  out:
+ 	if (err)
+@@ -398,6 +435,7 @@ int sip_dialog_fork(struct sip_dialog **dlgp, struct sip_dialog *odlg,
+ 
+ 	dlg->callid  = mem_ref(odlg->callid);
+ 	dlg->ltag    = mem_ref(odlg->ltag);
++	dlg->tls_host = mem_ref(odlg->tls_host); /* same dialog, same server */
+ 	dlg->hash    = odlg->hash;
+ 	dlg->lseq    = odlg->lseq;
+ 	dlg->lseqinv = odlg->lseqinv;
+@@ -712,6 +750,20 @@ enum sip_transp sip_dialog_tp(const struct sip_dialog *dlg)
+ }
+ 
+ 
++/**
++ * Get the host name a TLS server of a SIP Dialog may prove when the
++ * dialog's route gives it by IP address
++ *
++ * @param dlg SIP Dialog
++ *
++ * @return Host name, NULL if none
++ */
++const char *sip_dialog_tls_host(const struct sip_dialog *dlg)
++{
++	return dlg ? dlg->tls_host : NULL;
++}
++
++
+ /**
+  * Compare a SIP Dialog against a SIP Message
+  *
+--- a/src/sip/request.c
++++ b/src/sip/request.c
+@@ -31,6 +31,7 @@ struct sip_request {
+ 	char *met;
+ 	char *uri;
+ 	char *host;
++	char *tls_host;   /* the dialog's host name, see sip_dialog_tls_host() */
+ 	char *branch;
+ 	struct mbuf *mb;
+ 	sip_send_h *sendh;
+@@ -89,6 +90,7 @@ static void destructor(void *arg)
+ 	mem_deref(req->ct);
+ 	mem_deref(req->met);
+ 	mem_deref(req->uri);
++	mem_deref(req->tls_host);
+ 	mem_deref(req->host);
+ 	mem_deref(req->branch);
+ 	mem_deref(req->mb);
+@@ -210,7 +212,9 @@ out:
+ static int request(struct sip_request *req, enum sip_transp tp,
+ 		   const struct sa *dst)
+ {
++	const char *tls_name = NULL;
+ 	struct mbuf *mb   = NULL;
++	struct sa sa;
+ 	int err = ENOMEM;
+ 
+ 	req->provrecv = false;
+@@ -232,13 +236,21 @@ static int request(struct sip_request *req, enum sip_transp tp,
+ 			goto out;
+ 	}
+ 
++	/* the dialog's host name applies to the host itself and to a next
++	   hop given by IP address, never to another name */
++	if (tp == SIP_TRANSP_TLS && req->tls_host &&
++	    (0 == sa_set_str(&sa, req->host, 0) ||
++	     0 == str_casecmp(req->host, req->tls_host)))
++		tls_name = req->tls_host;
++
+ 	if (!req->stateful) {
+-		err = sip_send_conn(req->sip, NULL, tp, dst, req->host, mb,
+-				    connect_handler, req);
++		err = sip_transp_send(NULL, req->sip, NULL, tp, dst, req->host,
++				      tls_name, mb, connect_handler, NULL,
++				      req);
+ 	}
+ 	else {
+ 		err = sip_ctrans_request(&req->ct, req->sip, tp, dst, req->met,
+-					 req->branch, req->host, mb,
++					 req->branch, req->host, tls_name, mb,
+ 					 connect_handler, response_handler,
+ 					 req);
+ 	}
+@@ -969,6 +981,8 @@ int sip_drequestf(struct sip_request **reqp, struct sip *sip, bool stateful,
+ 
+ 	req->reqp = reqp;
+ 	req->srcport = sip_dialog_srcport(dlg);
++	/* own reference: the request may outlive its dialog */
++	req->tls_host = mem_ref((char *)sip_dialog_tls_host(dlg));
+ 	err = sip_request_send(req, sip, sip_dialog_route(dlg));
+ 
+ out:
+--- a/src/sip/sip.c
++++ b/src/sip/sip.c
+@@ -214,8 +214,8 @@ int sip_send_conn(struct sip *sip, void *sock, enum sip_transp tp,
+ 		  const struct sa *dst, char *host, struct mbuf *mb,
+ 		  sip_conn_h *connh, void *arg)
+ {
+-	return sip_transp_send(NULL, sip, sock, tp, dst, host, mb, connh, NULL,
+-			       arg);
++	return sip_transp_send(NULL, sip, sock, tp, dst, host, NULL, mb, connh,
++			       NULL, arg);
+ }
+ 
+ 
+@@ -233,8 +233,8 @@ int sip_send_conn(struct sip *sip, void *sock, enum sip_transp tp,
+ int sip_send(struct sip *sip, void *sock, enum sip_transp tp,
+ 	     const struct sa *dst, struct mbuf *mb)
+ {
+-	return sip_transp_send(NULL, sip, sock, tp, dst, NULL, mb, NULL, NULL,
+-			       NULL);
++	return sip_transp_send(NULL, sip, sock, tp, dst, NULL, NULL, mb, NULL,
++			       NULL, NULL);
+ }
+ 
+ 
+--- a/src/sip/sip.h
++++ b/src/sip/sip.h
+@@ -54,7 +54,8 @@ struct sip_ctrans;
+ 
+ int  sip_ctrans_request(struct sip_ctrans **ctp, struct sip *sip,
+ 			enum sip_transp tp, const struct sa *dst, char *met,
+-			char *branch, char *host, struct mbuf *mb,
++			char *branch, char *host, const char *tls_name,
++			struct mbuf *mb,
+ 			sip_conn_h *connh,
+ 			sip_resp_h *resph, void *arg);
+ int  sip_ctrans_cancel(struct sip_ctrans *ct);
+@@ -75,8 +76,8 @@ typedef void(sip_transp_h)(int err, void *arg);
+ int  sip_transp_init(struct sip *sip, uint32_t sz);
+ int  sip_transp_send(struct sip_connqent **qentp, struct sip *sip, void *sock,
+ 		     enum sip_transp tp, const struct sa *dst, char *host,
+-		     struct mbuf *mb, sip_conn_h *connh, sip_transp_h *transph,
+-		     void *arg);
++		     const char *tls_name, struct mbuf *mb, sip_conn_h *connh,
++		     sip_transp_h *transph, void *arg);
+ bool sip_transp_supported(struct sip *sip, enum sip_transp tp, int af);
+ const char *sip_transp_srvid(enum sip_transp tp);
+ bool sip_transp_reliable(enum sip_transp tp);
+--- a/src/sip/transp.c
++++ b/src/sip/transp.c
+@@ -80,6 +80,9 @@ struct sip_conn {
+ 	struct tcp_conn *tc;
+ 	struct mbuf *mb;
+ 	struct sip *sip;
++	char *host;       /**< Host name of the dialog this side opened the
++			       connection for; NULL for a connection the
++			       peer opened or one to a host a peer named */
+ 	uint32_t ka_interval;
+ 	bool established;
+ 
+@@ -137,6 +140,7 @@ static void conn_destructor(void *arg)
+ 	mem_deref(conn->tc);
+ 	mem_deref(conn->mb);
+ 	mem_deref(conn->websock_conn);
++	mem_deref(conn->host);
+ }
+ 
+ 
+@@ -764,7 +768,8 @@ static uint32_t get_hash_of_fromhdr(struct mbuf *mb)
+ 
+ 
+ static int conn_send(struct sip_connqent **qentp, struct sip *sip, bool secure,
+-		     const struct sa *dst, char *host, struct mbuf *mb,
++		     const struct sa *dst, char *host, const char *tls_name,
++		     struct mbuf *mb,
+ 		     sip_conn_h *connh, sip_transp_h *transph, void *arg)
+ {
+ 	struct sip_conn *conn, *new_conn = NULL;
+@@ -774,6 +779,7 @@ static int conn_send(struct sip_connqent **qentp, struct sip *sip, bool secure,
+ 
+ #ifndef USE_TLS
+ 	(void) host;
++	(void) tls_name;
+ #endif
+ 
+ 	conn = conn_find(sip, dst, secure);
+@@ -846,6 +852,7 @@ static int conn_send(struct sip_connqent **qentp, struct sip *sip, bool secure,
+ 		const struct sip_transport *transp;
+ 		struct sip_ccert *ccert;
+ 		uint32_t hash = 0;
++		struct sa sa;
+ 
+ 		transp = transp_find(sip, SIP_TRANSP_TLS, sa_af(dst), dst);
+ 		if (!transp || !transp->tls) {
+@@ -872,9 +879,28 @@ static int conn_send(struct sip_connqent **qentp, struct sip *sip, bool secure,
+ 				goto out;
+ 		}
+ 
+-		err |= tls_set_verify_server(conn->sc, host);
++		/* tls_name is the host name of the request's dialog, given
++		   only when this hop is the dialog's own host or an IP
++		   address. For an IP address the server may prove either;
++		   otherwise host is that name and is verified as usual. */
++		if (tls_name && host && 0 == sa_set_str(&sa, host, 0)) {
++			DEBUG_NOTICE("%J may prove its address or \"%s\"\n",
++				     dst, tls_name);
++			err |= tls_set_verify_server_alt(conn->sc, host,
++							 tls_name);
++		}
++		else {
++			err |= tls_set_verify_server(conn->sc, host);
++		}
+ 		if (err)
+ 			goto out;
++
++		/* a dialog arriving on this connection inherits the name */
++		if (tls_name) {
++			err = str_dup(&conn->host, tls_name);
++			if (err)
++				goto out;
++		}
+ 	}
+ #endif
+ 
+@@ -1568,8 +1594,8 @@ void sip_transp_flush(struct sip *sip)
+ 
+ int sip_transp_send(struct sip_connqent **qentp, struct sip *sip, void *sock,
+ 		    enum sip_transp tp, const struct sa *dst, char *host,
+-		    struct mbuf *mb, sip_conn_h *connh, sip_transp_h *transph,
+-		    void *arg)
++		    const char *tls_name, struct mbuf *mb, sip_conn_h *connh,
++		    sip_transp_h *transph, void *arg)
+ {
+ 	const struct sip_transport *transp;
+ 	struct sip_conn *conn;
+@@ -1628,7 +1654,8 @@ int sip_transp_send(struct sip_connqent **qentp, struct sip *sip, void *sock,
+ 			err = tcp_send(conn->tc, mb);
+ 		}
+ 		else
+-			err = conn_send(qentp, sip, secure, &dsttmp, host, mb,
++			err = conn_send(qentp, sip, secure, &dsttmp, host,
++					secure ? tls_name : NULL, /* TLS only */ mb,
+ 					connh, transph, arg);
+ 		break;
+ 
+@@ -2011,6 +2038,24 @@ struct tcp_conn *sip_msg_tcpconn(const struct sip_msg *msg)
+ }
+ 
+ 
++/**
++ * Get the host name of the dialog this side opened the TLS connection of
++ * a SIP message for: the name this side configured, never one a peer
++ * named
++ *
++ * @param msg SIP message
++ *
++ * @return Host name, NULL if none
++ */
++const char *sip_msg_tls_host(const struct sip_msg *msg)
++{
++	if (!msg || !msg->sock || msg->tp != SIP_TRANSP_TLS)
++		return NULL;
++
++	return ((struct sip_conn *)msg->sock)->host;
++}
++
++
+ int  sip_keepalive_tcp(struct sip_keepalive *ka, struct sip_conn *conn,
+ 		       uint32_t interval)
+ {
+--- a/src/tls/openssl/tls.c
++++ b/src/tls/openssl/tls.c
+@@ -1283,6 +1283,129 @@ int tls_set_verify_server(struct tls_conn *tc, const char *host)
+ }
+ 
+ 
++static int tls_alt_name_idx = -1;
++static once_flag alt_name_oflag = ONCE_FLAG_INIT;
++
++
++/* Called by OpenSSL when the SSL object is freed: release its name. */
++static void alt_name_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
++			  int idx, long argl, void *argp)
++{
++	(void)parent;
++	(void)ad;
++	(void)idx;
++	(void)argl;
++	(void)argp;
++
++	mem_deref(ptr);
++}
++
++
++static void tls_init_alt_name_idx(void)
++{
++	tls_alt_name_idx = SSL_get_ex_new_index(0, "tls alt name",
++						NULL, NULL, alt_name_free);
++}
++
++
++/*
++ * A server reached by its IP address may prove the alternative name
++ * instead. Only the address mismatch of the server's own certificate is
++ * accepted, and only for a certificate valid for that name; every other
++ * error is handled as usual.
++ */
++static int tls_verify_handler_alt(int ok, X509_STORE_CTX *ctx)
++{
++	/* OpenSSL calls this for each check that fails; returning 1 lets
++	   verification go on to the checks that follow (validity dates,
++	   signatures), returning 0 ends it. */
++	if (!ok &&
++	    X509_STORE_CTX_get_error(ctx) == X509_V_ERR_IP_ADDRESS_MISMATCH &&
++	    X509_STORE_CTX_get_error_depth(ctx) == 0) {
++
++		SSL *ssl = X509_STORE_CTX_get_ex_data(ctx,
++				SSL_get_ex_data_X509_STORE_CTX_idx());
++		const char *name = ssl ?
++			SSL_get_ex_data(ssl, tls_alt_name_idx) : NULL;
++		X509 *leaf = X509_STORE_CTX_get0_cert(ctx);
++
++		if (name && leaf &&
++		    1 == X509_check_host(leaf, name, 0,
++					 X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS,
++					 NULL)) {
++			X509_STORE_CTX_set_error(ctx, X509_V_OK);
++			return 1;
++		}
++	}
++
++	return tls_verify_handler(ok, ctx);
++}
++
++
++/**
++ * Enable verification of a server reached by its IP address that may
++ * prove a host name instead
++ *
++ * The server certificate is accepted when it is valid for the IP
++ * address or for the host name. The host name is sent as SNI.
++ *
++ * @param tc   TLS Connection
++ * @param ip   IP address the connection is made to
++ * @param name Host name the server may prove instead
++ *
++ * @return 0 if success, otherwise errorcode
++ */
++int tls_set_verify_server_alt(struct tls_conn *tc, const char *ip,
++			      const char *name)
++{
++	char *copy;
++	void *old;
++	int err;
++
++	if (!tc || !ip || !name)
++		return EINVAL;
++
++	if (!tc->tls->verify_server)
++		return 0;
++
++	call_once(&alt_name_oflag, tls_init_alt_name_idx);
++	if (tls_alt_name_idx < 0)
++		return ENOMEM;
++
++	/* the check as for any IP address: its failure is what the
++	   handler may forgive */
++	if (!X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(tc->ssl), ip)) {
++		DEBUG_WARNING("X509_VERIFY_PARAM_set1_ip_asc error\n");
++		ERR_clear_error();
++		return EPROTO;
++	}
++
++	/* SNI, so a server with several certificates presents this one */
++	if (!SSL_set_tlsext_host_name(tc->ssl, name)) {
++		DEBUG_WARNING("SSL_set_tlsext_host_name error\n");
++		ERR_clear_error();
++		return EPROTO;
++	}
++
++	/* the name travels with the SSL object, where the handler finds it */
++	err = str_dup(&copy, name);
++	if (err)
++		return err;
++
++	old = SSL_get_ex_data(tc->ssl, tls_alt_name_idx);
++	if (!SSL_set_ex_data(tc->ssl, tls_alt_name_idx, copy)) {
++		mem_deref(copy);
++		ERR_clear_error();
++		return ENOMEM;
++	}
++	mem_deref(old);
++
++	SSL_set_verify(tc->ssl, SSL_VERIFY_PEER, tls_verify_handler_alt);
++
++	return 0;
++}
++
++
+ /**
+  * Enable verification of client certificate
+  *
+--- a/src/tls/stub.c
++++ b/src/tls/stub.c
+@@ -201,6 +201,16 @@ int tls_set_verify_server(struct tls_conn *tc, const char *host)
+ }
+ 
+ 
++int tls_set_verify_server_alt(struct tls_conn *tc, const char *ip,
++			      const char *name)
++{
++	(void)tc;
++	(void)ip;
++	(void)name;
++	return ENOSYS;
++}
++
++
+ int tls_get_issuer(struct tls *tls, struct mbuf *mb)
+ {
+ 	(void)tls;

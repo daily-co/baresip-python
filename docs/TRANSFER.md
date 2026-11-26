@@ -53,6 +53,43 @@ not part of a bridge (FreeSWITCH answers the REFER with a 403 for a one-legged
 call). A bot that answers a call and immediately tries to transfer it will hit
 this; the caller must be bridged through the switch to the bot first.
 
+### Passing context
+
+A bot that hands a caller to a human agent or a queue usually knows things the
+agent would otherwise ask again. `transfer(uri, headers={...})` sends them
+along:
+
+```python
+await call.transfer(
+    "sip:support@pbx.example.com",
+    headers={"User-to-User": "56a390f3d2b7310023a2;encoding=hex", "X-Case": "1234"},
+)
+```
+
+The headers are attached to the address the far end is told to call
+(`Refer-To: <sip:support@pbx.example.com?User-to-User=...>`), which is where
+SIP puts context meant for the party being called. The far end sets them on
+the call it places, and that party reads them as ordinary headers. The library
+does the escaping the address form needs.
+
+`User-to-User` is the standard header for this. Contact-center platforms read
+it from the transfer target, usually as hex data ending in `;encoding=hex`;
+check the platform's own format. A custom header works the same way.
+
+**Delivery is the far end's choice.** Nothing obliges the party being
+transferred to copy the headers, and practice varies:
+
+- Our own agents carry them (see "Receiving a transfer" below); the test suite
+  follows the context to the called party, directly and through a proxy.
+- FreeSWITCH places the new call without them. It keeps the whole target in
+  the channel variable `sip_refer_to`, so a dialplan can forward them.
+- Other switches, border controllers and carriers each have their own rule,
+  often a setting. When context does not arrive, look at what the party being
+  transferred sent on the new call.
+
+Headers that define the call itself (From, To, Call-ID, CSeq, Via, Route,
+Record-Route, Contact, Max-Forwards and the content headers) are refused.
+
 ## Attended transfer
 
 `await call.attended_transfer(consult_call)` splices the two far ends of two
@@ -77,8 +114,8 @@ and the call parks until someone decides. The decision is governed by
 `transfer_policy` on `UserAgent.create`:
 
 - `"manual"` (default): the parsed request is delivered as a
-  `TransferRequest` (target URI, raw Refer-To, `Replaces` presence, method)
-  via `call.on_transfer_request`. The application calls
+  `TransferRequest` (target URI, raw Refer-To, `Replaces` presence, method,
+  and the headers attached to the target) via `call.on_transfer_request`. The application calls
   `await call.accept_transfer()` — which dials the target and returns the new
   `Call`; the original leg closes once the new call establishes and the
   transferor is notified — or `await call.reject_transfer()`, which sends the
@@ -91,6 +128,35 @@ agent to place a call.** An agent that blindly complies can be steered into
 dialing premium-rate or arbitrary destinations by anyone who can get a call
 established with it. Auto-accept is for closed systems where every peer is
 trusted.
+
+The new call carries the context the transferor attached to the target.
+The context is written inside the target address itself, after a `?`, and not
+in the REFER's own headers:
+
+```
+Refer-To: <sip:agent@pbx.example.com?User-to-User=abc123&X-Queue=billing>
+```
+
+`TransferRequest.headers` holds every header attached; `accept_transfer()` and
+the `"auto"` policy set the `User-to-User` and `X-` headers among them on the
+call they place. The target comes from the far end, which your trunk does not
+vouch for, so nothing else is taken from it: an identity header
+(`P-Asserted-Identity`), a `Diversion` or a `Require` attached to the target
+is left out, with a warning in the log.
+
+`accept_transfer(headers={...})` adds headers of the application's own, which
+may be any header that does not define the call itself: a name the request
+also has takes the value given, and a value of `None` leaves that header out.
+
+Two agents are involved, and each uses a different part of the API:
+
+| Agent | What it does | What it uses |
+|---|---|---|
+| The one that receives the REFER | Accepts, dials the target, carries the context | `TransferRequest.headers`, `accept_transfer(headers=...)` |
+| The one the call is transferred to | Reads the context from the INVITE it receives | `Config(expose_headers=["User-to-User", "X-Queue"])`, then `call.headers` |
+
+`expose_headers` plays no part in accepting a transfer and adds nothing to the
+call placed: it is how an agent reads headers on a call it *receives*.
 
 Not deciding is also a decision, and a bad one: an ignored transfer times out
 on the transferor's side after about a minute and the parked call stays

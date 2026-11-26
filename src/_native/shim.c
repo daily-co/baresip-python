@@ -600,6 +600,52 @@ static void jw_kv_u32(struct jw *w, const char *key, uint32_t val)
     jw_puts(w, num);
 }
 
+/* -- SIP INFO ---------------------------------------------------------------
+ *
+ * The stack hands every INFO that is not DTMF relay to a per-call
+ * handler, and the handler's answer decides the reply: true is 200 OK,
+ * false is 488. The reply cannot wait for Python, so every INFO that
+ * fits the event channel is accepted and reported.
+ */
+static bool sip_info_handler(struct call *call, const char *ctype, const uint8_t *body, size_t len,
+                             const struct sip_msg *msg, void *arg)
+{
+    static struct jw w; /* re thread only; too large for the stack */
+    static char b64[4 * ((BP_INFO_BODY_MAX + 2) / 3) + 1];
+    size_t b64_len = sizeof(b64) - 1;
+    uint32_t handle = bp_call_handle_find(call);
+
+    (void)msg;
+    (void)arg;
+
+    if (!handle || len > BP_INFO_BODY_MAX)
+        return false;
+    if (!len)
+        b64_len = 0;
+    else if (base64_encode(body, len, b64, &b64_len))
+        return false;
+    b64[b64_len] = '\0';
+
+    w.len = 0;
+    w.overflow = false;
+    w.truncated = false;
+
+    jw_putc(&w, '{');
+    jw_kv_u32(&w, "call", handle);
+    jw_kv_str(&w, "text", ctype ? ctype : "");
+    jw_key(&w, "body");
+    jw_putc(&w, '"');
+    jw_puts(&w, b64); /* the base64 alphabet needs no escaping */
+    jw_putc(&w, '"');
+    jw_putc(&w, '}');
+    if (w.overflow)
+        return false;
+    w.buf[w.len] = '\0';
+
+    bp_emit(BP_EV_BASE + BP_EV_CALL_INFO, handle, w.buf);
+    return true;
+}
+
 /* -- stack event trampoline -------------------------------------------------
  *
  * One handler receives every event the stack emits and forwards it as
@@ -644,6 +690,11 @@ static void emit_stack_event(int ev, struct ua *ua, struct call *call, const str
     uint32_t ua_handle = handle_create(ua, BP_OBJ_UA);
     uint32_t call_handle = handle_create(call, BP_OBJ_CALL);
     size_t i;
+
+    /* Every call the application can see passes through here before
+     * its dialog can carry an INFO; setting the handler again is free. */
+    if (call_handle)
+        call_set_sip_info_handler(call, sip_info_handler, NULL);
 
     w.len = 0;
     w.overflow = false;
@@ -791,6 +842,164 @@ static void emit_stack_event(int ev, struct ua *ua, struct call *call, const str
 }
 
 /* RE THREAD. */
+/* -- media encryption on incoming calls --------------------------------------
+ *
+ * A call takes its media encryption from its account when it is created,
+ * and one account mode answers one form of offer. So an incoming call is
+ * accepted here: the account's mode is set from what the caller offers,
+ * the call is created, and the mode is put back, all on the re thread,
+ * where nothing else can observe the account in between.
+ *
+ * An account with no encryption follows the caller. An account that
+ * requires SRTP (srtp-mand) takes whichever SRTP form is offered and
+ * leaves a plain offer to the stack, which refuses it with 488. Any other
+ * mode was chosen in raw account parameters and is left alone.
+ */
+
+/* The stack's account modes for SRTP with its keys in the SDP (SDES),
+ * and the SDP profile each one answers. */
+#define MENC_SRTP "srtp-mand"           /* RTP/SAVP */
+#define MENC_SRTP_FEEDBACK "srtp-mandf" /* RTP/SAVPF, the RTCP-feedback profile */
+#define MENC_SRTP_OPTIONAL "srtp"       /* keys on an unencrypted line */
+#define SDP_PROTO_SAVP "RTP/SAVP"
+#define SDP_PROTO_SAVPF "RTP/SAVPF"
+#define SDP_PROTO_AVPF "RTP/AVPF"
+
+/* A stream takes its SDP profile from its account's media-encryption
+ * mode, and the stack has none for RTP/AVPF, the unencrypted profile
+ * with RTCP feedback: an offer in it would find no stream to match and
+ * be refused. This mode encrypts nothing and only names that profile. */
+#define MENC_FEEDBACK "avpf"
+static struct menc menc_feedback = {
+    .id = MENC_FEEDBACK,
+    .sdp_proto = SDP_PROTO_AVPF,
+};
+
+/* The account mode that answers this offer in its own profile, or NULL
+ * for the plain one. Of several audio sections an SRTP one is preferred.
+ *
+ * FIXME: a DTLS-SRTP offer (UDP/TLS/RTP/SAVP[F] with a fingerprint) is
+ * not recognised here, so it is answered like an unencrypted one and
+ * refused. The dtls_srtp module is loaded; mapping the offer to it
+ * belongs with a "dtls" value for Account.media_encryption. */
+static const char *offer_mediaenc(const struct sip_msg *msg)
+{
+    const char *body = msg->mb ? (const char *)mbuf_buf(msg->mb) : NULL;
+    size_t n = msg->mb ? mbuf_get_left(msg->mb) : 0;
+    bool savp = false, savpf = false, avpf = false, keys = false;
+    size_t i = 0;
+
+    while (body && i < n) {
+        const char *eol = memchr(&body[i], '\n', n - i);
+        size_t len = eol ? (size_t)(eol - &body[i]) : n - i;
+        struct pl port, proto;
+
+        if (0 == re_regex(&body[i], len, "m=audio [0-9]+ [^ \r]+", &port, &proto)) {
+            if (pl_u32(&port) == 0)
+                ; /* a section the caller itself disabled */
+            else if (0 == pl_strcmp(&proto, SDP_PROTO_SAVP))
+                savp = true;
+            else if (0 == pl_strcmp(&proto, SDP_PROTO_SAVPF))
+                savpf = true;
+            else if (0 == pl_strcmp(&proto, SDP_PROTO_AVPF))
+                avpf = true;
+        } else if (len >= 9 && 0 == memcmp(&body[i], "a=crypto:", 9)) {
+            keys = true;
+        }
+        i += len + 1;
+    }
+
+    if (savp)
+        return MENC_SRTP;
+    if (savpf)
+        return MENC_SRTP_FEEDBACK;
+    if (avpf)
+        return MENC_FEEDBACK;
+    /* Keys on a plain line: the caller would like SRTP but accepts none. */
+    return keys ? MENC_SRTP_OPTIONAL : NULL;
+}
+
+/* The media sections of the offer in this INVITE, as "m=..." lines. */
+static void offer_summary(const struct sip_msg *msg, char *buf, size_t size)
+{
+    const char *body = msg->mb ? (const char *)mbuf_buf(msg->mb) : NULL;
+    size_t n = msg->mb ? mbuf_get_left(msg->mb) : 0;
+    size_t i = 0, used = 0;
+
+    buf[0] = '\0';
+    while (body && i < n) {
+        const char *eol = memchr(&body[i], '\n', n - i);
+        size_t len = eol ? (size_t)(eol - &body[i]) : n - i;
+        size_t take = len && body[i + len - 1] == '\r' ? len - 1 : len;
+
+        if (take > 2 && 0 == memcmp(&body[i], "m=", 2) && used + take + 3 < size) {
+            if (used)
+                used += (size_t)re_snprintf(&buf[used], size - used, "; ");
+            memcpy(&buf[used], &body[i], take);
+            used += take;
+            buf[used] = '\0';
+        }
+        i += len + 1;
+    }
+}
+
+/* Accept the INVITE, and say so when the stack refuses it instead: a
+ * refused call is otherwise invisible to the application. The stack
+ * refuses an offer it cannot answer with a 488, and a Replaces header
+ * that matches no call with a 481; either way it reports success and
+ * leaves no call behind. So does this shim while draining, on purpose,
+ * which is not worth a warning. */
+static void accept_or_explain(struct ua *ua, const struct sip_msg *msg)
+{
+    char offer[200];
+    int err = ua_accept(ua, msg);
+
+    if (err) {
+        warning("call from %r refused before the application saw it: %m\n", &msg->from.auri,
+                err);
+    } else if (g_drain || ua_find_call_msg(ua, msg)) {
+        return;
+    } else if (sip_msg_hdr(msg, SIP_HDR_REPLACES)) {
+        warning("call from %r refused before the application saw it: its Replaces header "
+                "names no call here\n",
+                &msg->from.auri);
+    } else {
+        offer_summary(msg, offer, sizeof(offer));
+        warning("call from %r refused before the application saw it: nothing in its offer "
+                "\"%s\" is acceptable to this account; check its media encryption and "
+                "codecs\n",
+                &msg->from.auri, offer);
+    }
+}
+
+static void accept_incoming(const struct sip_msg *msg)
+{
+    struct ua *ua = uag_find_msg(msg);
+    struct account *acc = ua_account(ua);
+    const char *mode = account_mediaenc(acc);
+    const char *pick = offer_mediaenc(msg);
+    char rest[32];
+
+    if (!ua) {
+        (void)sip_treply(NULL, uag_sip(), msg, 404, "Not Found");
+        return;
+    }
+    /* An account that requires SRTP keeps its mode for an unencrypted
+     * offer, which the stack then refuses. */
+    if (!pick || (mode && 0 != str_cmp(mode, MENC_SRTP)) ||
+        (mode && 0 == str_cmp(pick, MENC_FEEDBACK))) {
+        accept_or_explain(ua, msg);
+        return;
+    }
+
+    rest[0] = '\0';
+    if (mode)
+        str_ncpy(rest, mode, sizeof(rest));
+    (void)account_set_mediaenc(acc, pick);
+    accept_or_explain(ua, msg);
+    (void)account_set_mediaenc(acc, rest[0] ? rest : NULL);
+}
+
 static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
 {
     struct ua *ua = bevent_get_ua(event);
@@ -804,6 +1013,24 @@ static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
      * included. A credential must never cross into the payload. */
     if (ev == BEVENT_CREATE)
         text = NULL;
+
+    /* An incoming INVITE, before any call exists for it: this shim, not
+     * the core, accepts it (see accept_incoming). Accepting creates the
+     * call, which is then reported through CALL_INCOMING like any other,
+     * so this event itself is not forwarded. */
+    if (ev == BEVENT_SIPSESS_CONN && msg) {
+        accept_incoming(msg);
+        return;
+    }
+
+    /* The stack refused an INVITE before a call existed for it; the text
+     * is the status it answered with. */
+    if (ev == BEVENT_SIPSESS_FAILED && msg && text)
+        warning("call from %r refused before the application saw it: %s%s\n", &msg->from.auri,
+                text,
+                0 == strncmp(text, "486 Max Calls", 13)
+                    ? " (the limit is Config.max_concurrent_calls)"
+                    : "");
 
     /* Draining: refuse new inbound work right here on the re thread —
      * a busy Python loop cannot leak a ring through. The call is
@@ -836,6 +1063,11 @@ static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
 int bp_bevent_max(void)
 {
     return BEVENT_MAX;
+}
+
+int bp_menc_event_secure(void)
+{
+    return MENC_EVENT_SECURE;
 }
 
 const char *bp_bevent_str(int ev)
@@ -999,6 +1231,15 @@ static void cmd_handler(int id, void *data, void *arg)
             bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
             break;
         }
+        /* An incoming call is allocated expecting video. Answered
+         * without it, the stack would find the video direction changed
+         * and renegotiate the call moments after it is established. */
+        if (!video) {
+            enum sdp_dir adir, vdir;
+
+            call_get_media_estdir(call, &adir, &vdir);
+            call_set_media_estdir(call, adir, SDP_INACTIVE);
+        }
         int cerr = call_answer(call, 200, video ? VIDMODE_ON : VIDMODE_OFF);
 
         if (cerr) {
@@ -1156,6 +1397,13 @@ static void cmd_handler(int id, void *data, void *arg)
             bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
             break;
         }
+        /* While a renegotiation awaits its answer the stack would flip
+         * its hold state and send nothing. Leave the state alone and say
+         * so, for the caller to try again. */
+        if (!call_refresh_allowed(call)) {
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"busy\"}");
+            break;
+        }
         int cerr = call_hold(call, hold);
 
         if (cerr) {
@@ -1179,7 +1427,25 @@ static void cmd_handler(int id, void *data, void *arg)
         }
         while (end && *end == ' ')
             end++;
-        int cerr = (end && *end) ? call_transfer(call, end) : EINVAL;
+        /* A second line holds headers to attach to a target given as a
+         * bare user part: the target is completed against the account as
+         * the stack would, here, so they have an address to attach to. */
+        char *attached = end ? strchr(end, '\n') : NULL;
+        char *target = NULL;
+        int cerr = (end && *end) ? 0 : EINVAL;
+
+        if (!cerr && attached) {
+            struct uri uri = *account_luri(call_account(call));
+
+            *attached++ = '\0';
+            pl_set_str(&uri.user, end);
+            uri.params = pl_null;
+            uri.headers = pl_null;
+            cerr = re_sdprintf(&target, "<%H?%s>", uri_encode, &uri, attached);
+        }
+        if (!cerr)
+            cerr = call_transfer(call, target ? target : end);
+        mem_deref(target);
 
         if (cerr) {
             char json[64];
@@ -1236,6 +1502,27 @@ static void cmd_handler(int id, void *data, void *arg)
             bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"accept\",\"errno\":22}");
             break;
         }
+        /* "Name: value" lines after the target are headers for the new
+         * call. */
+        struct list hdrs;
+        char *line = strchr(end, '\n');
+
+        list_init(&hdrs);
+        if (line)
+            *line++ = '\0';
+        while (line && *line) {
+            char *next = strchr(line, '\n');
+            char *colon;
+
+            if (next)
+                *next++ = '\0';
+            colon = strstr(line, ": ");
+            if (colon) {
+                *colon = '\0';
+                custom_hdrs_add(&hdrs, line, "%s", colon + 2);
+            }
+            line = next;
+        }
         /* The menu module's recipe: allocate the replacement call with
          * the transferring call as xcall (5th arg) — that linkage is
          * what makes the core report the outcome to the transferor and
@@ -1246,7 +1533,16 @@ static void cmd_handler(int id, void *data, void *arg)
         struct call *call2 = NULL;
         int saved_af;
         bool af_set = dial_af_set(ua, false, &saved_af);
+
+        /* A call takes the account's custom headers when allocated. */
+        if (!list_isempty(&hdrs))
+            ua_set_custom_hdrs(ua, &hdrs);
         int cerr = ua_call_alloc(&call2, ua, VIDMODE_OFF, NULL, call, call_localuri(call), true);
+
+        if (!list_isempty(&hdrs)) {
+            ua_set_custom_hdrs(ua, NULL);
+            list_flush(&hdrs);
+        }
 
         if (af_set)
             (void)net_set_af(baresip_network(), saved_af);
@@ -1379,20 +1675,84 @@ static void cmd_handler(int id, void *data, void *arg)
 
     case BP_CMD_CALL_REJECT:
     case BP_CMD_CALL_HANGUP: {
-        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, NULL, 10) : 0;
+        static char hdrs[BP_CLOSE_HEADERS_MAX]; /* re thread only */
+        char *end = NULL;
+        uint32_t h = msg->json ? (uint32_t)strtoul(msg->json, &end, 10) : 0;
+        uint16_t scode = end ? (uint16_t)strtoul(end, &end, 10) : 0;
         struct call *call = handle_lookup(h, BP_OBJ_CALL);
+        const char *reason = NULL;
+        char *line = end ? strchr(end, '\n') : NULL;
+        size_t len = 0;
+        bool too_long = false;
 
         if (!call) {
             bp_emit(BP_EV_STALE_HANDLE, msg->handle, NULL);
             break;
         }
-        /* ua_hangupf — not bare call_hangup — is the whole-life-cycle
-         * hangup: it sends the response/BYE, emits CALL_CLOSED (which
-         * clears the handle slot), and releases the UA's reference. */
-        if (id == BP_CMD_CALL_REJECT)
-            ua_hangup(call_get_ua(call), call, 486, "Busy Here");
-        else
-            ua_hangup(call_get_ua(call), call, 0, NULL);
+
+        /* Second line: the reason phrase. Every further line: a header. */
+        if (line) {
+            char *next = strchr(++line, '\n');
+
+            if (next)
+                *next++ = '\0';
+            if (*line)
+                reason = line;
+            line = next;
+        }
+        hdrs[0] = '\0';
+        while (line && *line) {
+            char *next = strchr(line, '\n');
+            size_t n = next ? (size_t)(next - line) : strlen(line);
+
+            if (len + n + 3 > sizeof(hdrs)) {
+                too_long = true;
+                break;
+            }
+            memcpy(&hdrs[len], line, n);
+            memcpy(&hdrs[len + n], "\r\n", 3);
+            len += n + 2;
+            line = next ? next + 1 : NULL;
+        }
+        if (too_long) {
+            bp_emit(BP_EV_DONE, msg->handle, "{\"error\":\"headers_too_long\"}");
+            break;
+        }
+        if (id == BP_CMD_CALL_REJECT && !scode) {
+            scode = 486;
+            reason = "Busy Here";
+        }
+
+        /* End the call in three steps, which is what the stack's
+         * ua_hangupf does in one: send the message that ends it, emit
+         * CALL_CLOSED (which clears the handle slot), and release the
+         * UA's reference to the call.
+         *
+         * ua_hangupf is not used because it passes the reason as a
+         * printf format when it emits CALL_CLOSED. The reason is the
+         * application's text: a '%' in it would make the stack read
+         * arguments that do not exist. Here the application's text is
+         * only ever an argument to a fixed "%s".
+         *
+         * The headers are supplied twice, because the message that ends
+         * a call depends on its state and each takes its headers from a
+         * different place:
+         *   - an answered call ends with a BYE, which carries the call's
+         *     "close headers" (call_set_close_headers);
+         *   - a call not yet answered ends with a rejection, which
+         *     carries the text given to call_hangupf. That text must
+         *     also end the header block, hence "Content-Length: 0" and
+         *     the blank line.
+         * The stack uses whichever applies. */
+        if (hdrs[0]) {
+            (void)call_set_close_headers(call, "%s", hdrs);
+            call_hangupf(call, scode, reason, "%sContent-Length: 0\r\n\r\n", hdrs);
+        } else {
+            call_hangup(call, scode, reason);
+        }
+        (void)bevent_call_emit(BEVENT_CALL_CLOSED, call, "%s",
+                               reason ? reason : "Rejected by user");
+        mem_deref(call);
         bp_emit(BP_EV_DONE, msg->handle, NULL);
         break;
     }
@@ -1597,6 +1957,7 @@ static void loop_unwind(enum bp_stage stage)
          * its call, so unregistering now leaves nothing dangling. */
         bp_aumem_unregister();
         bp_vidmem_unregister();
+        menc_unregister(&menc_feedback);
     }
     if (stage >= BP_STAGE_CONF)
         conf_close();
@@ -1666,20 +2027,13 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
     if (err)
         goto out;
 
-    /* The core's compiled default is call.accept=false, in which mode an
-     * incoming INVITE gets NO reply on the wire (not even 100 Trying) and
-     * no call object — only a SIPSESS_CONN event, with the application
-     * expected to screen the message and call ua_accept() by hand. This
-     * binding's inbound API is built entirely on the core-accepted path
-     * (CALL_INCOMING carrying a call handle), so accept mode is forced
-     * here, after the user config parse, where no config text can
-     * override it — with call.accept=false incoming calls would not be
-     * screened, they would silently vanish.
-     *
-     * FIXME: if call screening is ever wanted, expose it additively — a
-     * Python hook on the SIPSESS_CONN event plus a per-INVITE accept
-     * command — instead of surfacing this flag. */
-    conf_config()->call.accept = true;
+    /* Incoming INVITEs are accepted by this shim, not by the core: with
+     * call.accept off the core hands each one over as a SIPSESS_CONN
+     * event, and accept_incoming() picks the media encryption from the
+     * offer before the call object exists. Forced here, after the user
+     * config parse, so that no config text can turn it back on and
+     * bypass that choice. */
+    conf_config()->call.accept = false;
     g_drain = false;
 
     stage = BP_STAGE_BARESIP;
@@ -1714,6 +2068,7 @@ int bp_loop_init(const char *conf_dir, const char *config_text, int log_level)
     err = bp_vidmem_register();
     if (err)
         goto out;
+    menc_register(baresip_mencl(), &menc_feedback);
 
     err = mqueue_alloc(&g_mq, cmd_handler, NULL);
     if (err)

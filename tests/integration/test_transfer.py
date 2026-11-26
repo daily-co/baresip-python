@@ -28,9 +28,9 @@ import pytest
 
 native = pytest.importorskip("baresip._native")
 
-from test_telephony_gates import fs_cli
+from test_telephony_gates import bridged, fs_cli
 
-from baresip import Account, TransferFailed
+from baresip import Account, Config, TransferFailed
 from baresip.call import CallState
 from baresip.runtime import Runtime
 from baresip.ua import UserAgent
@@ -44,7 +44,12 @@ DOMAIN = f"127.0.0.1:{os.environ.get('BENCH_SIP_PORT', '15060')}"
 async def runtime(tmp_path):
     rt = Runtime()
     await rt.start(
-        f"net_interface 127.0.0.1\naudio_source ausine,440\naudio_player aufile,{tmp_path}/rx.wav\n"
+        Config(
+            net_interface="127.0.0.1",
+            max_concurrent_calls=None,
+            audio_source="ausine,440",
+            audio_player=f"aufile,{tmp_path}/rx.wav",
+        )
     )
     try:
         yield rt
@@ -70,6 +75,7 @@ async def test_blind_transfer_repoints_the_far_end_and_closes_our_leg(runtime):
     await a_call.wait_established()
     await b_call.wait_established()
 
+    await bridged()
     await a_call.transfer(f"sip:9196@{DOMAIN}")
 
     # Success IS the closing of our leg; the switch reported the

@@ -23,7 +23,8 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+import urllib.parse
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from baresip._native import lib
@@ -45,7 +46,201 @@ from baresip.video import CallVideo
 logger = logging.getLogger("baresip.call")
 
 _ESTABLISH_TIMEOUT = 30.0
+# A CALL_MENC event's text is "<menc event>,<stream>,<suite>"; this one
+# says the audio stream is now encrypted.
+_AUDIO_SECURED = re.compile(rf"{lib.bp_menc_event_secure()},audio\b")
+
+# The reason phrase sent with a rejection when the caller gives none: the
+# stack would say "Busy Here" for every code.
+_REASON_PHRASES = {
+    300: "Multiple Choices",
+    301: "Moved Permanently",
+    302: "Moved Temporarily",
+    305: "Use Proxy",
+    380: "Alternative Service",
+    400: "Bad Request",
+    401: "Unauthorized",
+    402: "Payment Required",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    406: "Not Acceptable",
+    407: "Proxy Authentication Required",
+    408: "Request Timeout",
+    410: "Gone",
+    413: "Request Entity Too Large",
+    414: "Request-URI Too Long",
+    415: "Unsupported Media Type",
+    416: "Unsupported URI Scheme",
+    420: "Bad Extension",
+    421: "Extension Required",
+    423: "Interval Too Brief",
+    480: "Temporarily Unavailable",
+    481: "Call/Transaction Does Not Exist",
+    482: "Loop Detected",
+    483: "Too Many Hops",
+    484: "Address Incomplete",
+    485: "Ambiguous",
+    486: "Busy Here",
+    487: "Request Terminated",
+    488: "Not Acceptable Here",
+    491: "Request Pending",
+    493: "Undecipherable",
+    500: "Server Internal Error",
+    501: "Not Implemented",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Server Time-out",
+    505: "Version Not Supported",
+    513: "Message Too Large",
+    600: "Busy Everywhere",
+    603: "Decline",
+    604: "Does Not Exist Anywhere",
+    606: "Not Acceptable",
+}
+_REASON_CLASSES = {
+    3: "Redirection",
+    4: "Request Failure",
+    5: "Server Failure",
+    6: "Global Failure",
+}
+
+
+def header_lines(headers: dict | None) -> str:
+    """Render custom headers as the command lines the native layer takes.
+
+    Each header becomes ``"\\nName: value"``; no headers render as the
+    empty string.
+
+    Raises:
+        ValueError: a name that is empty or holds a colon, a space or a
+            line break; a value that holds a line break.
+    """
+    lines = ""
+    for name, value in (headers or {}).items():
+        if not name or any(c in name for c in "\r\n: "):
+            raise ValueError(f"invalid header name {name!r}")
+        if any(c in str(value) for c in "\r\n"):
+            raise ValueError(f"header {name}: value must be single-line")
+        lines += f"\n{name}: {value}"
+    return lines
+
+
+# Headers that define a call or its message. A transfer target is not
+# allowed to set them on the call placed for it.
+_CALL_DEFINING_HEADERS = frozenset(
+    {
+        "from", "to", "call-id", "cseq", "via", "route", "record-route", "contact",
+        "max-forwards", "content-length", "content-type", "content-disposition",
+        "content-encoding", "f", "t", "i", "v", "m", "l", "c", "e",
+    }
+)  # fmt: skip
+# Characters a header attached to an address carries unescaped (RFC 3261
+# section 19.1.1: unreserved and hnv-unreserved).
+_ADDRESS_HEADER_SAFE = "-_.!~*'()[]/?:+$"
+# The native layer's limit on the header lines of one command.
+_HEADER_LINES_MAX = 2048
+
+
+def _transfer_target(uri: str, headers: dict | None) -> str:
+    """The transfer command's target for ``uri`` with ``headers`` attached.
+
+    A full address is enclosed in angle brackets, which the attached
+    headers and any address parameter need to be read as part of it. A
+    bare user part is returned as given, for the native layer to
+    complete against the account, with the headers to attach on a
+    second line.
+
+    Raises:
+        ValueError: an invalid or call-defining header, or headers for
+            a ``uri`` that is neither a full address nor a bare user part.
+    """
+    header_lines(headers)
+    for name in headers or {}:
+        if name.lower() in _CALL_DEFINING_HEADERS:
+            raise ValueError(f"header {name} cannot be set by a transfer")
+    attached = "&".join(
+        f"{urllib.parse.quote(name, safe=_ADDRESS_HEADER_SAFE)}="
+        f"{urllib.parse.quote(str(value), safe=_ADDRESS_HEADER_SAFE)}"
+        for name, value in (headers or {}).items()
+    )
+    if uri.startswith("<"):
+        address, closing, rest = uri[1:].partition(">")
+        if not closing:
+            raise ValueError("uri opens an angle bracket and never closes it")
+    elif re.match(r"sips?:", uri, re.IGNORECASE):
+        address, rest = uri, ""
+    elif not attached:
+        return uri
+    elif any(c in uri for c in "@:;?<>"):
+        # Neither a full sip: address nor a plain user part: there is no
+        # place in it the headers could be attached to.
+        raise ValueError(
+            f"headers need a sip: or sips: address, or a bare user part, to attach to; got {uri!r}"
+        )
+    else:
+        return f"{uri}\n{attached}"
+    if attached:
+        address += ("&" if "?" in address else "?") + attached
+    return f"<{address}>{rest}"
+
+
+def _is_context_header(name: str) -> bool:
+    """True for a header a transfer target may set on the call placed for it."""
+    lowered = name.lower()
+    return lowered == "user-to-user" or lowered.startswith("x-")
+
+
+def _carried_header_lines(request: "TransferRequest", headers: dict | None) -> str:
+    """The header lines for the call placed to execute ``request``.
+
+    The call carries the context attached to the request's target, then
+    ``headers``: a name the request also has takes the given value, and
+    a value of None leaves that header out.
+
+    The request's headers come from the peer, which the call's own
+    trunk does not vouch for. Only what context travels in is taken
+    from them, ``User-to-User`` and ``X-`` headers; anything else (an
+    identity, a charging or a routing header) is left out with a
+    warning, as is a malformed one. ``headers`` are the application's:
+    they are validated, and may name any header that does not define
+    the call.
+
+    Raises:
+        ValueError: an invalid or call-defining header in ``headers``, or
+            headers past the native layer's size limit.
+    """
+    carried: dict[str, tuple[str, object]] = {}
+    for name, value in request.headers.items():
+        try:
+            if not _is_context_header(name):
+                raise ValueError("not a context header")
+            header_lines({name: value})
+        except ValueError:
+            logger.warning("transfer request: header %r is not carried to the new call", name)
+            continue
+        carried[name.lower()] = (name, value)
+    for name, value in (headers or {}).items():
+        if name.lower() in _CALL_DEFINING_HEADERS:
+            raise ValueError(f"header {name} cannot be set on a transferred call")
+        if value is None:
+            carried.pop(name.lower(), None)
+            continue
+        header_lines({name: value})
+        carried[name.lower()] = (name, value)
+    lines = header_lines(dict(carried.values()))
+    if len(lines) > _HEADER_LINES_MAX:
+        if headers:
+            raise ValueError(f"headers exceed {_HEADER_LINES_MAX} bytes")
+        logger.warning("transfer request: its headers are too long and are not carried")
+        return ""
+    return lines
+
+
 _TRANSFER_TIMEOUT = 60.0
+# How long a hold or resume waits for an earlier renegotiation to be
+# answered before it is sent.
+_REFRESH_WAIT = 5.0
 _DTMF_DIGITS = "0123456789ABCD*#"
 _DTMF_TONE_MS = 100
 
@@ -66,17 +261,22 @@ class TransferRequest:
 
     Parameters:
         target: The parsed target URI.
-        raw: The complete Refer-To value, exactly as received.
+        raw: The complete Refer-To value as received, on one line: a
+            value the sender folded over several lines is unfolded.
         replaces: True when the target embeds a Replaces parameter —
             an attended transfer, pointing at an existing dialog.
         method: The requested method, uppercase. "INVITE" (a call) in
             all but exotic uses.
+        headers: The headers attached to the target, by name, unescaped:
+            the context the transferor wants the new call to carry
+            (``User-to-User``, typically). Replaces is not among them.
     """
 
     target: str
     raw: str
     replaces: bool
     method: str
+    headers: dict = field(default_factory=dict)
 
 
 def _parse_refer_to(raw: str) -> TransferRequest:
@@ -85,18 +285,52 @@ def _parse_refer_to(raw: str) -> TransferRequest:
     The value may be angle-bracketed, carry URI headers (?Replaces=...)
     inside the brackets, and address parameters (;method=...) outside
     them. Execution always uses ``raw`` — this parse only informs.
+
+    A header value may arrive folded over several lines, which means
+    the same as a space (RFC 3261 section 7.3.1). It is unfolded: the
+    accept command takes the value as one line and reads the lines
+    after it as headers.
     """
-    value = raw.strip()
+    raw = re.sub(r"[ \t]*\r?\n[ \t]*|\r", " ", raw).strip()
+    value = raw
     if value.startswith("<"):
         addr, _, params = value[1:].partition(">")
     else:
         addr, _, params = value.partition(";")
-    target, _, _uri_headers = addr.partition("?")
+    target, _, uri_headers = addr.partition("?")
     match = re.search(r"(?:^|;)\s*method=([^;]+)", params, re.IGNORECASE)
     method = match.group(1).strip().upper() if match else "INVITE"
+    headers = {}
+    for pair in filter(None, uri_headers.split("&")):
+        name, _, value = pair.partition("=")
+        name = urllib.parse.unquote(name)
+        if name.lower() != "replaces":
+            headers[name] = urllib.parse.unquote(value)
     return TransferRequest(
-        target=target.strip(), raw=raw, replaces="replaces=" in addr.lower(), method=method
+        target=target.strip(),
+        raw=raw,
+        replaces="replaces=" in addr.lower(),
+        method=method,
+        headers=headers,
     )
+
+
+@dataclass(frozen=True)
+class InfoEvent:
+    """One SIP INFO request the far end sent, delivered to ``on_info`` callbacks.
+
+    A PBX or contact-center platform uses INFO to pass an application
+    event inside a call. What the body means is between the two sides;
+    it arrives exactly as sent.
+
+    Parameters:
+        content_type: The request's Content-Type, parameters included;
+            empty when it had none.
+        body: The request's body, empty when it had none.
+    """
+
+    content_type: str
+    body: bytes
 
 
 @dataclass(frozen=True)
@@ -141,6 +375,7 @@ class Call:
         peer: str | None = None,
         call_id: str | None = None,
         headers: dict | None = None,
+        missed: list[StackEvent] | None = None,
     ):
         """Bind to a native call. Library-internal; see the class docstring.
 
@@ -152,6 +387,8 @@ class Call:
             peer: The far end's URI, when already known.
             call_id: The SIP Call-ID, when already known.
             headers: Allowlisted INVITE headers, for inbound calls.
+            missed: Stack events delivered since the command that created
+                the call was sent; the call takes the ones that are its own.
         """
         self._runtime = runtime
         self._handle = handle
@@ -159,6 +396,7 @@ class Call:
         self._state = state
         self._on_hold = False
         self._remote_on_hold = False
+        self._media_encrypted = False
         self._transfer_pending = False
         self._transfer_request: TransferRequest | None = None
         self._transfer_req_listeners: list = []
@@ -172,11 +410,17 @@ class Call:
         self._dtmf_listeners: list = []
         self._dtmf_pressed: tuple[str, float] | None = None
         self._rtcp_adapters: dict = {}
+        self._info_adapters: dict = {}
         self._final_stats: CallStats | None = None
         self.peer = peer
         self.call_id = call_id
         self.headers = dict(headers) if headers else {}
         runtime.subscribe(self._on_stack_event)
+        # Events delivered before this object existed, oldest first; the
+        # handler ignores those of other calls. A call that already ended
+        # is closed by the time the caller gets it.
+        for event in missed or ():
+            self._on_stack_event(event)
 
     @classmethod
     def _from_incoming(cls, runtime: Runtime, event: StackEvent) -> "Call":
@@ -209,6 +453,16 @@ class Call:
         """True while we hold the call (the last :meth:`hold` /
         :meth:`resume` that reached the wire)."""
         return self._on_hold
+
+    @property
+    def media_encrypted(self) -> bool:
+        """True once the call's audio is encrypted with SRTP.
+
+        Set when the stack reports the audio stream secured, which
+        happens as the call is established; False before that and on an
+        unencrypted call.
+        """
+        return self._media_encrypted
 
     @property
     def remote_on_hold(self) -> bool:
@@ -281,6 +535,8 @@ class Call:
             self.peer = event.peer
         if event.event is Event.CALL_ESTABLISHED:
             self._state = CallState.ESTABLISHED
+        elif event.event is Event.CALL_MENC and _AUDIO_SECURED.match(event.text or ""):
+            self._media_encrypted = True
         elif event.event is Event.CALL_HOLD:
             self._remote_on_hold = True
         elif event.event is Event.CALL_RESUME:
@@ -395,28 +651,75 @@ class Call:
             errno = json.loads(payload).get("errno", 0)
             raise BaresipError(f"answer failed: {os.strerror(errno)}")
 
-    async def reject(self) -> None:
-        """Decline the call with 486 Busy Here.
+    async def reject(
+        self, status: int = 486, reason: str | None = None, headers: dict | None = None
+    ) -> None:
+        """Refuse an incoming call that has not been answered.
+
+        The status tells the far end what to do next, and switches and
+        contact-center platforms act on it: 486 (the default) says this
+        endpoint is busy, 480 that it is unavailable for now, 503 that
+        the call should be tried elsewhere, 603 that it is declined.
+
+        A proxy on the way may change what arrives: one that follows
+        RFC 3261 does not pass a 503 on, and the caller sees a 500.
+
+        On a call that is no longer incoming and unanswered this ends
+        the call instead, as :meth:`hangup` does; the status then goes
+        unused.
+
+        Args:
+            status: The SIP status to answer with, 300 to 699. A 3xx
+                redirects the caller, and is only complete with a
+                ``Contact`` header naming where to go.
+            reason: The phrase sent after the status. None sends the
+                standard phrase for it. A single line.
+            headers: Extra headers for the response, name to value.
 
         Raises:
+            ValueError: a status outside 300-699, a reason or a header
+                value with a line break, an invalid header name, or
+                headers longer than the native layer carries.
             StaleHandleError: the call is already gone.
         """
-        await self._end(lib.BP_CMD_CALL_REJECT)
+        if not 300 <= status <= 699:
+            raise ValueError(f"status must be a 3xx-6xx SIP code, got {status}")
+        if reason is None:
+            reason = _REASON_PHRASES.get(status) or _REASON_CLASSES[status // 100]
+        elif not reason or any(c in reason for c in "\r\n"):
+            raise ValueError("reason must be a single, non-empty line")
+        await self._end(lib.BP_CMD_CALL_REJECT, f" {status}\n{reason}", headers)
 
-    async def hangup(self) -> None:
+    async def hangup(self, headers: dict | None = None) -> None:
         """Hang up the call.
 
         Valid in any state; on a not-yet-answered call it declines.
 
+        Args:
+            headers: Extra headers for the message that ends the call,
+                name to value: the BYE of an answered call, or the
+                rejection of an incoming one not yet answered. An
+                outgoing call that nobody has answered is cancelled, and
+                a cancellation carries none. Once set they also go on
+                this side's answer to the far end's own BYE, should that
+                arrive first.
+
         Raises:
+            ValueError: an invalid header name, a header value with a
+                line break, or headers longer than the native layer
+                carries.
             StaleHandleError: the call is already gone.
         """
-        await self._end(lib.BP_CMD_CALL_HANGUP)
+        await self._end(lib.BP_CMD_CALL_HANGUP, "\n" if headers else "", headers)
 
-    async def _end(self, cmd_id: int) -> None:
-        ev, _ = await self._runtime.cmd(cmd_id, args=str(self._handle))
+    async def _end(self, cmd_id: int, how: str = "", headers: dict | None = None) -> None:
+        ev, payload = await self._runtime.cmd(
+            cmd_id, args=f"{self._handle}{how}{header_lines(headers)}"
+        )
         if ev == lib.BP_EV_STALE_HANDLE:
             raise StaleHandleError("call no longer exists")
+        if payload is not None and json.loads(payload).get("error") == "headers_too_long":
+            raise ValueError(f"headers must fit in {lib.BP_CLOSE_HEADERS_MAX} bytes")
 
     async def hold(self) -> None:
         """Put the call on hold: a re-INVITE tells the far end, and media
@@ -426,24 +729,27 @@ class Call:
         arrives as events. Already-held calls return immediately. The far
         end holding *us* is :attr:`remote_on_hold`, not this.
 
+        A renegotiation still being answered, such as a resume sent just
+        before, is waited out for a few seconds.
+
         Raises:
             StaleHandleError: the call is already gone.
             BaresipError: the call is not established, another session
-                refresh is in flight (retry shortly), or the stack
-                refused.
+                refresh stayed in flight, or the stack refused.
         """
         await self._set_hold(True)
 
     async def resume(self) -> None:
         """Take the call off hold (the counterpart of :meth:`hold`).
 
-        A call that is not held returns immediately.
+        A call that is not held returns immediately. The hold before it
+        may still be on its way to being answered; it is waited out for a
+        few seconds.
 
         Raises:
             StaleHandleError: the call is already gone.
             BaresipError: the call is not established, another session
-                refresh is in flight (retry shortly), or the stack
-                refused.
+                refresh stayed in flight, or the stack refused.
         """
         await self._set_hold(False)
 
@@ -536,6 +842,20 @@ class Call:
         verb = "hold" if hold else "resume"
         if self._on_hold == hold:
             return
+        # The stack sends one renegotiation at a time, and hold() and
+        # resume() return when theirs is sent, so the one before can
+        # still be awaiting its answer. That passes in a round trip.
+        deadline = asyncio.get_running_loop().time() + _REFRESH_WAIT
+        while not await self._send_hold(hold, verb):
+            if asyncio.get_running_loop().time() >= deadline:
+                raise BaresipError(
+                    f"{verb} not sent: a session refresh stayed in flight for {_REFRESH_WAIT:g} s"
+                )
+            await asyncio.sleep(0.05)
+        self._on_hold = hold
+
+    async def _send_hold(self, hold: bool, verb: str) -> bool:
+        """Send the hold or resume re-INVITE; False when another is in flight."""
         if self._state is not CallState.ESTABLISHED:
             raise BaresipError(f"{verb} requires an established call")
 
@@ -544,8 +864,7 @@ class Call:
         # and then a retry would be a no-op against the already-flipped
         # flag. The re-INVITE's one observable is the CALL_LOCAL_SDP
         # "offer" event, emitted before the command completes; when it is
-        # missing, flip the state back and report, so a later retry
-        # starts clean.
+        # missing, flip the state back, so the next attempt starts clean.
         saw_offer = False
 
         def listener(event: StackEvent) -> None:
@@ -567,16 +886,17 @@ class Call:
         if ev == lib.BP_EV_STALE_HANDLE:
             raise StaleHandleError("call no longer exists")
         if payload is not None:
-            errno = json.loads(payload).get("errno", 0)
-            raise BaresipError(f"{verb} failed: {os.strerror(errno)}")
+            data = json.loads(payload)
+            if data.get("error") == "busy":
+                return False
+            raise BaresipError(f"{verb} failed: {os.strerror(data.get('errno', 0))}")
         if not saw_offer:
             await self._runtime.cmd(lib.BP_CMD_CALL_HOLD, args=f"{self._handle} {int(not hold)}")
-            raise BaresipError(
-                f"{verb} not sent: a session refresh is already in flight; retry shortly"
-            )
-        self._on_hold = hold
+        return saw_offer
 
-    async def transfer(self, uri: str, *, timeout: float = _TRANSFER_TIMEOUT) -> None:
+    async def transfer(
+        self, uri: str, *, headers: dict | None = None, timeout: float = _TRANSFER_TIMEOUT
+    ) -> None:
         """Blind-transfer the call (REFER) and await the outcome.
 
         Asks the far end to call ``uri`` instead of talking to us. On
@@ -592,11 +912,21 @@ class Call:
         Args:
             uri: The SIP URI the far end should call. A bare user part
                 is completed against the account's domain by the stack.
+            headers: Context for the party the far end calls, such as
+                ``{"User-to-User": "56a3...;encoding=hex"}``. The headers
+                are attached to ``uri``, escaped, for the far end to set
+                on the call it places; whether it does is the far end's
+                choice.
+                The receiving application reads them from the call's
+                headers when its ``Config.expose_headers`` lists them.
             timeout: Seconds to wait for the far end's reported outcome
                 (a peer may accept the REFER and never report).
 
         Raises:
-            ValueError: a URI that cannot travel in a request.
+            ValueError: a URI that cannot travel in a request, a header
+                with an invalid name or value, or one that defines the
+                call itself (From, To, Call-ID, Via, Route, Contact and
+                the like).
             TransferFailed: the far end refused or reported a failing
                 outcome, the call closed without one, or no outcome
                 arrived within ``timeout``.
@@ -606,12 +936,13 @@ class Call:
         """
         if not uri or any(c in uri for c in " \r\n"):
             raise ValueError("uri must be non-empty, single-line, and without spaces")
+        target = _transfer_target(uri, headers)
         if self._state is not CallState.ESTABLISHED:
             raise BaresipError("transfer requires an established call")
         if self._transfer_pending:
             raise BaresipError("a transfer is already in progress on this call")
         await self._execute_transfer(
-            f"{self._handle} {uri}", cmd=lib.BP_CMD_CALL_TRANSFER, timeout=timeout
+            f"{self._handle} {target}", cmd=lib.BP_CMD_CALL_TRANSFER, timeout=timeout
         )
 
     async def attended_transfer(
@@ -688,8 +1019,15 @@ class Call:
         if callback in self._transfer_req_listeners:
             self._transfer_req_listeners.remove(callback)
 
-    async def accept_transfer(self) -> "Call":
+    async def accept_transfer(self, *, headers: dict | None = None) -> "Call":
         """Execute the pending transfer request: dial its target.
+
+        The new call carries the context the transferor attached to the
+        target, so that it reaches the party being called: the
+        ``User-to-User`` and ``X-`` headers of
+        :attr:`TransferRequest.headers`. The target comes from the far
+        end, so its other headers are not carried; pass in ``headers``
+        any the new call should have.
 
         Returns the new outbound call immediately (await its
         :meth:`wait_established` for the outcome). The stack ties this
@@ -698,7 +1036,14 @@ class Call:
         the new call fails, the transferor is notified of the failure
         and this call continues.
 
+        Args:
+            headers: Headers to set on the new call in addition to the
+                request's own. A name the request also has takes the
+                value given here; a value of None leaves that header out.
+
         Raises:
+            ValueError: ``headers`` holds an invalid or call-defining
+                header.
             BaresipError: no request is pending, or dialing failed (the
                 transferor is then told with a 500 sipfrag).
             StaleHandleError: the call is already gone.
@@ -706,24 +1051,28 @@ class Call:
         request = self._transfer_request
         if request is None:
             raise BaresipError("no transfer request is pending on this call")
-        ev, payload = await self._runtime.cmd(
-            lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{self._handle} {request.raw}"
-        )
-        if ev == lib.BP_EV_STALE_HANDLE:
-            raise StaleHandleError("call no longer exists")
-        data = json.loads(payload)
-        if "error" in data:
-            errno = data.get("errno")
-            detail = os.strerror(errno) if errno else data["error"]
-            raise BaresipError(f"transfer accept failed: {detail}")
-        self._transfer_request = None
-        return Call(
-            self._runtime,
-            handle=data["handle"],
-            ua_handle=self._ua_handle,
-            state=CallState.OUTGOING,
-            peer=request.target,
-        )
+        lines = _carried_header_lines(request, headers)
+        # As in UserAgent.dial(): the new call may end before it is built here.
+        with self._runtime._events_meanwhile() as missed:
+            ev, payload = await self._runtime.cmd(
+                lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{self._handle} {request.raw}{lines}"
+            )
+            if ev == lib.BP_EV_STALE_HANDLE:
+                raise StaleHandleError("call no longer exists")
+            data = json.loads(payload)
+            if "error" in data:
+                errno = data.get("errno")
+                detail = os.strerror(errno) if errno else data["error"]
+                raise BaresipError(f"transfer accept failed: {detail}")
+            self._transfer_request = None
+            return Call(
+                self._runtime,
+                handle=data["handle"],
+                ua_handle=self._ua_handle,
+                state=CallState.OUTGOING,
+                peer=request.target,
+                missed=missed,
+            )
 
     async def reject_transfer(self, status: int = 603) -> None:
         """Refuse the pending transfer request; the call continues.
@@ -917,6 +1266,33 @@ class Call:
         """Stop delivering RTCP snapshots to ``callback``. Unknown callbacks
         are ignored."""
         adapter = self._rtcp_adapters.pop(callback, None)
+        if adapter is not None:
+            self.off(adapter)
+
+    def on_info(self, callback) -> None:
+        """Deliver the far end's SIP INFO requests to ``callback``.
+
+        Every INFO on the call is answered 200 OK, whether or not anything
+        listens here. DTMF sent as INFO is not reported here: it arrives
+        through :meth:`on_dtmf`. A body larger than 8 KiB is refused with
+        488 and not delivered.
+
+        Args:
+            callback: Called with an :class:`InfoEvent`. Same delivery
+                contract as :meth:`on`.
+        """
+
+        def adapter(event: StackEvent) -> None:
+            if event.event is Event.CALL_INFO:
+                callback(InfoEvent(content_type=event.text or "", body=event.body))
+
+        self._info_adapters[callback] = adapter
+        self.on(adapter)
+
+    def off_info(self, callback) -> None:
+        """Stop delivering INFO requests to ``callback``. Unknown callbacks
+        are ignored."""
+        adapter = self._info_adapters.pop(callback, None)
         if adapter is not None:
             self.off(adapter)
 

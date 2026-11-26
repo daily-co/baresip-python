@@ -1,0 +1,91 @@
+sipsess: warn when a BYE cannot be sent or is not delivered
+
+A session that ends drops the error of its BYE in three places: when
+the request cannot be sent at all (terminate, sipsess_abort) and when
+it is sent but fails later, on connect, TLS, DNS or timeout
+(bye_resp_handler). The far end then stays in a call this side has
+left, and nothing is logged.
+
+Each of the three now logs a warning with the error.
+
+Origin: written for baresip-python; offered upstream separately.
+libre is BSD-3-Clause; this patch is offered under the same terms.
+
+--- a/src/sipsess/close.c
++++ b/src/sipsess/close.c
+@@ -18,13 +18,23 @@
+ #include "sipsess.h"
+ 
+ 
++#define DEBUG_MODULE "sipsess"
++#define DEBUG_LEVEL 5
++#include <re_dbg.h>
++
++
+ static void bye_resp_handler(int err, const struct sip_msg *msg, void *arg)
+ {
+ 	struct sipsess *sess = arg;
+ 
+-	if (err || sip_request_loops(&sess->ls, msg->scode))
++	if (err) {
++		DEBUG_WARNING("BYE was not delivered (%m)\n", err);
+ 		goto out;
++	}
+ 
++	if (sip_request_loops(&sess->ls, msg->scode))
++		goto out;
++
+ 	if (msg->scode < 200) {
+ 		return;
+ 	}
+--- a/src/sipsess/sess.c
++++ b/src/sipsess/sess.c
+@@ -18,6 +18,11 @@
+ #include "sipsess.h"
+ 
+ 
++#define DEBUG_MODULE "sipsess"
++#define DEBUG_LEVEL 5
++#include <re_dbg.h>
++
++
+ static int internal_offer_handler(struct mbuf **descp,
+ 				  const struct sip_msg *msg, void *arg)
+ {
+@@ -110,13 +115,18 @@
+ 
+ static bool terminate(struct sipsess *sess)
+ {
++	int err;
++
+ 	sess->terminated = 2;
+ 
+ 	if (!sess->established || sess->peerterm)
+ 		return false;
+ 
+-	if (sipsess_bye(sess, true))
++	err = sipsess_bye(sess, true);
++	if (err) {
++		DEBUG_WARNING("BYE could not be sent (%m)\n", err);
+ 		return false;
++	}
+ 
+ 	mem_ref(sess);
+ 	return true;
+@@ -320,10 +330,15 @@
+  */
+ void sipsess_abort(struct sipsess *sess)
+ {
++	int err;
++
+ 	if (!sess)
+ 		return;
+ 
+-	sipsess_bye(sess, true);
++	err = sipsess_bye(sess, true);
++	if (err)
++		DEBUG_WARNING("BYE could not be sent (%m)\n", err);
++
+ 	sess->terminated = 2;
+ }
+ 

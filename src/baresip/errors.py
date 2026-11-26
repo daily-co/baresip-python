@@ -83,6 +83,18 @@ class UnsupportedFeatureError(BaresipError):
     """
 
 
+class NoCaCertificatesError(BaresipError):
+    """TLS was asked for, but no CA certificates were found to verify with.
+
+    The runtime verifies every TLS server against CA certificates it finds
+    at start: ``SSL_CERT_FILE``, ``SSL_CERT_DIR``, the platform's own
+    locations, the ``certifi`` package, and ``SIP_CA_FILE`` in addition. It found none,
+    so it keeps TLS off rather than connect to a server it cannot
+    authenticate. Point ``SIP_CA_FILE`` at a CA bundle, or install
+    ``certifi``.
+    """
+
+
 class NoLocalAddressError(BaresipError):
     """No local interface can reach the dial target.
 

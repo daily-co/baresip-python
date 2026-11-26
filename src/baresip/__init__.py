@@ -29,6 +29,7 @@ from baresip.errors import (
     CommandQueueFull,
     CommandTimeout,
     DrainingError,
+    NoCaCertificatesError,
     NoLocalAddressError,
     RegistrationError,
     RuntimeDead,
@@ -45,7 +46,7 @@ from baresip.stats import CallStats
 # the application configures handlers.
 logging.getLogger("baresip").addHandler(logging.NullHandler())
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 # Names that pull in the native extension are resolved lazily (PEP 562), so
 # that `import baresip` — and with it the version lookup done by build
@@ -58,6 +59,7 @@ _NATIVE_BACKED = {
     "CallAudio": "baresip.audio",
     "CallState": "baresip.call",
     "DigitEvent": "baresip.call",
+    "InfoEvent": "baresip.call",
     "Runtime": "baresip.runtime",
     "TransferRequest": "baresip.call",
     "UserAgent": "baresip.ua",
@@ -99,6 +101,8 @@ __all__: list[str] = [
     "DigitEvent",
     "DrainingError",
     "Event",
+    "InfoEvent",
+    "NoCaCertificatesError",
     "NoLocalAddressError",
     "RegistrationError",
     "Runtime",
