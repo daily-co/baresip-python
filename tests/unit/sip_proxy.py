@@ -88,6 +88,7 @@ class SipProxy:
             empty for none.
         contact: When set, replaces the URI in the Contact of the
             answering side's 2xx; a format string as above plus ``user``.
+        tls_port: The port to accept TLS on; 0 for any free one.
     """
 
     def __init__(
@@ -97,6 +98,7 @@ class SipProxy:
         keyfile: str,
         record_route: tuple[str, ...] = (),
         contact: str | None = None,
+        tls_port: int = 0,
     ):
         self._agent_addr = agent_addr
         self._tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -110,7 +112,7 @@ class SipProxy:
         #: Every request that passed through, as (method, transport it arrived on).
         self.requests: list[tuple[str, str]] = []
         self.udp_port = 0
-        self.tls_port = 0
+        self.tls_port = tls_port
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -118,7 +120,9 @@ class SipProxy:
             lambda: _Udp(self), local_addr=("127.0.0.1", 0)
         )
         self.udp_port = self._udp.get_extra_info("sockname")[1]
-        self._server = await asyncio.start_server(self._on_tls, "127.0.0.1", 0, ssl=self._tls)
+        self._server = await asyncio.start_server(
+            self._on_tls, "127.0.0.1", self.tls_port, ssl=self._tls
+        )
         self.tls_port = self._server.sockets[0].getsockname()[1]
 
     async def close(self) -> None:

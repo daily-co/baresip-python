@@ -128,5 +128,5 @@ class StackEvent:
     to: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     stats: dict = field(default_factory=dict)
-    body: bytes = b""
     truncated: bool = False
+    body: bytes = b""

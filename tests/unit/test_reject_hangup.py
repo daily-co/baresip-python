@@ -163,6 +163,54 @@ async def test_reject_sends_the_callers_own_reason(pair):
     assert (refusal.value.status, refusal.value.reason) == (480, "Agent on a break")
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "100% busy",
+        "Busy 100%d now",
+        "Agent busy %s%s%s%s%s%s%s%s",
+        "%n%n%n%n",
+        "%H %r %m %w %v %b %j",
+        "%",
+    ],
+)
+async def test_a_reason_is_never_read_as_a_format(pair, reason):
+    """The reason is the application's text: it reaches the wire, and the
+    rejecting side's own close event, exactly as written."""
+    ring, _trace = pair
+    placed, received = await ring()
+    closed: list[str] = []
+    received.on(
+        lambda event: closed.append(event.text) if event.event is Event.CALL_CLOSED else None
+    )
+
+    await received.reject(status=480, reason=reason)
+
+    with pytest.raises(CallFailed) as refusal:
+        await placed.wait_established(timeout=5)
+    assert (refusal.value.status, refusal.value.reason) == (480, reason)
+    await until_closed(received)
+    assert closed == [reason]
+
+
+async def test_a_reason_with_headers_is_never_read_as_a_format(pair):
+    ring, trace = pair
+    placed, received = await ring()
+    closed: list[str] = []
+    received.on(
+        lambda event: closed.append(event.text) if event.event is Event.CALL_CLOSED else None
+    )
+
+    await received.reject(status=480, reason="50%s off %n", headers={"X-Note": "100% %s"})
+
+    with pytest.raises(CallFailed) as refusal:
+        await placed.wait_established(timeout=5)
+    assert refusal.value.reason == "50%s off %n"
+    assert "\r\nX-Note: 100% %s\r\n" in await trace.first("SIP/2.0 480")
+    await until_closed(received)
+    assert closed == ["50%s off %n"]
+
+
 async def test_reject_headers_arrive_as_written(pair):
     ring, trace = pair
     placed, received = await ring()

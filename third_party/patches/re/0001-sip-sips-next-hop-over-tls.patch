@@ -10,8 +10,11 @@ A sips: next hop is accepted and reached over TLS (RFC 3261 19.1.2 and
 26.2.2). TLS is forced whatever transport the dialog is already on and
 whatever a transport parameter says, because a caller that reached the
 proxy over UDP, or a URI that picked up transport=udp from an account,
-would otherwise send to the TLS port in the clear. Without a TLS
-transport the request fails with EPROTONOSUPPORT.
+would otherwise send to the TLS port in the clear. The transport is
+marked as chosen for every sips: next hop, a dialog already on TLS
+included: for a host name without a port the NAPTR and SRV lookup
+would otherwise choose a transport itself, and can choose UDP. Without
+a TLS transport the request fails with EPROTONOSUPPORT.
 
 Origin: based on https://github.com/baresip/re/pull/1647 by phgace
 ("sip: send requests with a sips: route over TLS"), which upstream
@@ -41,24 +44,31 @@ libre is BSD-3-Clause; this patch is offered under the same terms.
  		return ENOSYS;
  
  	req = mem_zalloc(sizeof(*req), destructor);
-@@ -710,6 +713,20 @@
- 		req->tp_selected = false;
- 	}
+@@ -708,6 +711,27 @@
+ 		}
  
-+	/* A SIPS URI is reached over TLS (RFC 3261 19.1.2 and 26.2.2),
-+	 * whatever transport the dialog is on or a transport parameter
-+	 * names */
-+	if (sips && req->tp != SIP_TRANSP_TLS && req->tp != SIP_TRANSP_WSS) {
-+
-+		if (!sip_transp_supported(sip, SIP_TRANSP_TLS, AF_UNSPEC)) {
-+			err = EPROTONOSUPPORT;
-+			goto out;
-+		}
-+
-+		req->tp = SIP_TRANSP_TLS;
-+		req->tp_selected = true;
+ 		req->tp_selected = false;
 +	}
 +
++	/* A SIPS URI is reached over TLS (RFC 3261 19.1.2 and 26.2.2),
++	 * whatever transport the dialog is on or a transport parameter
++	 * names. The transport counts as chosen even when the dialog is
++	 * already on TLS: for a host name with no port the lookup would
++	 * otherwise pick a transport of its own, UDP among them */
++	if (sips) {
++
++		if (req->tp != SIP_TRANSP_TLS && req->tp != SIP_TRANSP_WSS) {
++
++			if (!sip_transp_supported(sip, SIP_TRANSP_TLS,
++						  AF_UNSPEC)) {
++				err = EPROTONOSUPPORT;
++				goto out;
++			}
++
++			req->tp = SIP_TRANSP_TLS;
++		}
++
++		req->tp_selected = true;
+ 	}
+ 
  out:
- 	if (err)
- 		mem_deref(req);

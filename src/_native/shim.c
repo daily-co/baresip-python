@@ -1715,23 +1715,36 @@ static void cmd_handler(int id, void *data, void *arg)
             reason = "Busy Here";
         }
 
-        /* ua_hangupf — not bare call_hangup — is the whole-life-cycle
-         * hangup: it sends the response/BYE, emits CALL_CLOSED (which
-         * clears the handle slot), and releases the UA's reference.
+        /* End the call in three steps, which is what the stack's
+         * ua_hangupf does in one: send the message that ends it, emit
+         * CALL_CLOSED (which clears the handle slot), and release the
+         * UA's reference to the call.
          *
-         * The headers reach the wire by two routes, since which message
-         * ends the call depends on its state: the session's close
-         * headers ride the BYE, and the format passed to the hangup
-         * rides a rejection, which also wants its own end of headers.
-         * Both take a printf format, so the caller's text is only ever
-         * an argument to "%s". */
+         * ua_hangupf is not used because it passes the reason as a
+         * printf format when it emits CALL_CLOSED. The reason is the
+         * application's text: a '%' in it would make the stack read
+         * arguments that do not exist. Here the application's text is
+         * only ever an argument to a fixed "%s".
+         *
+         * The headers are supplied twice, because the message that ends
+         * a call depends on its state and each takes its headers from a
+         * different place:
+         *   - an answered call ends with a BYE, which carries the call's
+         *     "close headers" (call_set_close_headers);
+         *   - a call not yet answered ends with a rejection, which
+         *     carries the text given to call_hangupf. That text must
+         *     also end the header block, hence "Content-Length: 0" and
+         *     the blank line.
+         * The stack uses whichever applies. */
         if (hdrs[0]) {
             (void)call_set_close_headers(call, "%s", hdrs);
-            ua_hangupf(call_get_ua(call), call, scode, reason, "%sContent-Length: 0\r\n\r\n",
-                       hdrs);
+            call_hangupf(call, scode, reason, "%sContent-Length: 0\r\n\r\n", hdrs);
         } else {
-            ua_hangup(call_get_ua(call), call, scode, reason);
+            call_hangup(call, scode, reason);
         }
+        (void)bevent_call_emit(BEVENT_CALL_CLOSED, call, "%s",
+                               reason ? reason : "Rejected by user");
+        mem_deref(call);
         bp_emit(BP_EV_DONE, msg->handle, NULL);
         break;
     }
