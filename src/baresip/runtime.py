@@ -765,6 +765,23 @@ class Runtime:
         """Remove a listener registered with :meth:`subscribe`."""
         self._listeners.remove(listener)
 
+    @contextlib.contextmanager
+    def _events_meanwhile(self):
+        """Collect the stack events delivered inside the ``with`` block.
+
+        A command that creates a call answers with the call's handle, and
+        events for that call can be delivered before the awaiting code
+        runs again to build its :class:`~baresip.call.Call`. The call is
+        built inside the block and given what was collected.
+        """
+        seen: list[StackEvent] = []
+        listener = seen.append
+        self.subscribe(listener)
+        try:
+            yield seen
+        finally:
+            self.unsubscribe(listener)
+
     def _dispatch(self, ev: int, handle: int, payload) -> None:
         # Two id spaces: stack events go to listeners, everything below
         # BP_EV_BASE completes the command whose handle it carries.
