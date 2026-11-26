@@ -112,6 +112,8 @@ class SipProxy:
         registrar: bool = False,
     ):
         self._agent_addr = agent_addr
+        #: The server name each TLS connection asked for, in order; None for none.
+        self.server_names: list[str | None] = []
         self._tls = self._context(certfile, keyfile)
         self._tls2 = self._context(*second_cert) if second_cert else None
         self._registrar = registrar
@@ -124,8 +126,6 @@ class SipProxy:
         self._writers: list[asyncio.StreamWriter] = []
         #: Every request that passed through, as (method, transport it arrived on).
         self.requests: list[tuple[str, str]] = []
-        #: The server name each TLS connection asked for, in order; None for none.
-        self.server_names: list[str | None] = []
         self.udp_port = 0
         self.tls_port = tls_port
         self.tls2_port = 0
