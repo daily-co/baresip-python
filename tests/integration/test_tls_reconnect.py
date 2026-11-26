@@ -109,8 +109,8 @@ async def test_a_hangup_arrives_over_a_new_connection_to_a_route_the_certificate
 
 @pytest.mark.xfail(
     strict=True,
-    reason="a new connection inside a call is verified against the route's own host: "
-    "the hang-up is not sent when the certificate does not name it",
+    reason="a route that gives a host name is verified against that name: "
+    "the hang-up is not sent when the certificate does not carry it",
 )
 async def test_a_hangup_arrives_over_a_new_connection_to_a_route_the_certificate_does_not_name(
     runtime,
