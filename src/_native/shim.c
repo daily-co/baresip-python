@@ -1715,18 +1715,27 @@ static void cmd_handler(int id, void *data, void *arg)
             reason = "Busy Here";
         }
 
-        /* The whole-life-cycle hangup, as ua_hangupf does it: send the
-         * response or BYE, emit CALL_CLOSED (which clears the handle
-         * slot), and release the UA's reference. ua_hangupf itself is
-         * not used: it emits CALL_CLOSED with the reason as the format
-         * string, and the reason here is the application's text.
+        /* End the call in three steps, which is what the stack's
+         * ua_hangupf does in one: send the message that ends it, emit
+         * CALL_CLOSED (which clears the handle slot), and release the
+         * UA's reference to the call.
          *
-         * The headers reach the wire by two routes, since which message
-         * ends the call depends on its state: the session's close
-         * headers ride the BYE, and the format passed to the hangup
-         * rides a rejection, which also wants its own end of headers.
-         * Every one of these takes a printf format, so the caller's
-         * text is only ever an argument to "%s". */
+         * ua_hangupf is not used because it passes the reason as a
+         * printf format when it emits CALL_CLOSED. The reason is the
+         * application's text: a '%' in it would make the stack read
+         * arguments that do not exist. Here the application's text is
+         * only ever an argument to a fixed "%s".
+         *
+         * The headers are supplied twice, because the message that ends
+         * a call depends on its state and each takes its headers from a
+         * different place:
+         *   - an answered call ends with a BYE, which carries the call's
+         *     "close headers" (call_set_close_headers);
+         *   - a call not yet answered ends with a rejection, which
+         *     carries the text given to call_hangupf. That text must
+         *     also end the header block, hence "Content-Length: 0" and
+         *     the blank line.
+         * The stack uses whichever applies. */
         if (hdrs[0]) {
             (void)call_set_close_headers(call, "%s", hdrs);
             call_hangupf(call, scode, reason, "%sContent-Length: 0\r\n\r\n", hdrs);
