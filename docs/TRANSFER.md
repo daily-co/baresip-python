@@ -130,6 +130,13 @@ established with it. Auto-accept is for closed systems where every peer is
 trusted.
 
 The new call carries the context the transferor attached to the target.
+The context is written inside the target address itself, after a `?`, and not
+in the REFER's own headers:
+
+```
+Refer-To: <sip:agent@pbx.example.com?User-to-User=abc123&X-Queue=billing>
+```
+
 `TransferRequest.headers` holds every header attached; `accept_transfer()` and
 the `"auto"` policy set the `User-to-User` and `X-` headers among them on the
 call they place. The target comes from the far end, which your trunk does not
@@ -140,8 +147,16 @@ is left out, with a warning in the log.
 `accept_transfer(headers={...})` adds headers of the application's own, which
 may be any header that does not define the call itself: a name the request
 also has takes the value given, and a value of `None` leaves that header out.
-To read context on a call you *receive*, list the header names in
-`Config(expose_headers=[...])`.
+
+Two agents are involved, and each uses a different part of the API:
+
+| Agent | What it does | What it uses |
+|---|---|---|
+| The one that receives the REFER | Accepts, dials the target, carries the context | `TransferRequest.headers`, `accept_transfer(headers=...)` |
+| The one the call is transferred to | Reads the context from the INVITE it receives | `Config(expose_headers=["User-to-User", "X-Queue"])`, then `call.headers` |
+
+`expose_headers` plays no part in accepting a transfer and adds nothing to the
+call placed: it is how an agent reads headers on a call it *receives*.
 
 Not deciding is also a decision, and a bad one: an ignored transfer times out
 on the transferor's side after about a minute and the parked call stays

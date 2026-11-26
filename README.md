@@ -193,8 +193,9 @@ Whether the context arrives is the far end's choice. Our own agents carry it, wh
 test suite checks through a proxy. FreeSWITCH, as the party being transferred, places the
 new call without it unless its dialplan forwards it; other switches and carriers vary.
 
-To receive context, list the header names in `Config(expose_headers=["User-to-User", ...])`;
-they then appear in the incoming call's `headers`, like any exposed header.
+The agent a call is transferred *to* reads the context from the INVITE it receives: list the
+header names in `Config(expose_headers=["User-to-User", ...])`, and they appear in that call's
+`headers`, like any exposed header. This setting plays no part in accepting a transfer.
 
 When a peer asks one of our calls to transfer, `TransferRequest.headers` holds the context
 attached to its target, and `call.accept_transfer()` sets it on the call it places.
