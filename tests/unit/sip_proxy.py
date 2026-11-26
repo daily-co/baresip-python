@@ -133,7 +133,10 @@ class SipProxy:
     def _context(self, certfile: str, keyfile: str) -> ssl.SSLContext:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(certfile, keyfile)
-        context.sni_callback = lambda _socket, name, _context: self.server_names.append(name)
+        # The callback holds the list and not the proxy: a context that reached
+        # itself through its own callback would never be freed.
+        names = self.server_names
+        context.sni_callback = lambda _socket, name, _context: names.append(name)
         return context
 
     async def start(self) -> None:
