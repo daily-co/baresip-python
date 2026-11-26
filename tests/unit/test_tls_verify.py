@@ -15,6 +15,7 @@ bench tests.
 import os
 import ssl
 import sys
+import tempfile
 import types
 
 import pytest
@@ -23,7 +24,7 @@ pytest.importorskip("baresip._native")
 
 import baresip.config as config_module
 import baresip.runtime as runtime_module
-from baresip import Account, Config, NoCaCertificatesError, Runtime, UserAgent
+from baresip import Account, BaresipError, Config, NoCaCertificatesError, Runtime, UserAgent
 from baresip.config import discover_ca, sip_ca_file
 
 
@@ -148,6 +149,112 @@ def test_sip_ca_file_is_trusted_alongside_the_platform_directory(
     assert text == f"x\nsip_cafile {private}\nsip_capath {certs}\n"
 
 
+PEM = "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n"
+
+
+def stack_value(text: str, directive: str) -> str:
+    """What the stack reads for ``directive``: its parser stops at whitespace."""
+    line = next(ln for ln in text.splitlines() if ln.startswith(directive + " "))
+    return line.split(None, 2)[1]
+
+
+def test_a_ca_file_whose_path_has_a_space_still_reaches_the_stack(
+    no_ca_anywhere, monkeypatch, tmp_path
+):
+    spaced = tmp_path / "My Certs"
+    spaced.mkdir()
+    private = spaced / "ca.pem"
+    private.write_text(PEM.format("PRIVATE"))
+    monkeypatch.setenv("SIP_CA_FILE", str(private))
+    runtime = Runtime()
+
+    text = runtime._with_tls_trust("")
+
+    read_by_stack = stack_value(text, "sip_cafile")
+    assert " " not in read_by_stack
+    with open(read_by_stack) as f:
+        assert f.read() == PEM.format("PRIVATE")
+    runtime._remove_conf_dir()
+    assert not os.path.exists(read_by_stack)
+
+
+def test_a_platform_file_whose_path_has_a_space_still_reaches_the_stack(
+    no_ca_anywhere, monkeypatch, tmp_path
+):
+    spaced = tmp_path / "Program Files"
+    spaced.mkdir()
+    platform = spaced / "cert.pem"
+    platform.write_text(PEM.format("PUBLIC"))
+    platform_paths(monkeypatch, cafile=str(platform))
+    runtime = Runtime()
+
+    text = runtime._with_tls_trust("")
+
+    with open(stack_value(text, "sip_cafile")) as f:
+        assert f.read() == PEM.format("PUBLIC")
+    runtime._remove_conf_dir()
+
+
+def test_a_ca_directory_whose_path_has_a_space_is_gathered_into_a_file(
+    no_ca_anywhere, monkeypatch, tmp_path
+):
+    spaced = tmp_path / "ssl certs"
+    spaced.mkdir()
+    (spaced / "one.pem").write_text(PEM.format("ONE"))
+    (spaced / "0a1b2c3d.0").write_text(PEM.format("ONE"))  # the same certificate, by its hash
+    (spaced / "two.crt").write_text(PEM.format("TWO"))
+    (spaced / "README").write_text("not a certificate\n")
+    monkeypatch.setenv("SSL_CERT_DIR", str(spaced))
+    runtime = Runtime()
+
+    text = runtime._with_tls_trust("")
+
+    assert "sip_capath" not in text
+    with open(stack_value(text, "sip_cafile")) as f:
+        assert f.read() == PEM.format("ONE") + PEM.format("TWO")
+    runtime._remove_conf_dir()
+
+
+async def test_a_start_that_is_refused_leaves_no_ca_file_behind(
+    no_ca_anywhere, monkeypatch, tmp_path
+):
+    platform, private = tmp_path / "platform.pem", tmp_path / "private.pem"
+    platform.write_text("PUBLIC CAS\n")
+    private.write_text("PRIVATE CA\n")
+    platform_paths(monkeypatch, cafile=str(platform))
+    monkeypatch.setenv("SIP_CA_FILE", str(private))
+    made: list[str] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        made.append(path)
+        return fd, path
+
+    monkeypatch.setattr(runtime_module.tempfile, "mkstemp", recording_mkstemp)
+    first = Runtime()
+    await first.start(Config(net_interface="127.0.0.1"))
+    try:
+        second = Runtime()
+        with pytest.raises(BaresipError, match="another Runtime is active"):
+            await second.start(Config(net_interface="127.0.0.1"))
+    finally:
+        await first.close()
+
+    assert len(made) == 2
+    assert not any(os.path.exists(path) for path in made)
+
+
+def test_paths_without_spaces_are_handed_over_as_they_are(no_ca_anywhere, monkeypatch, tmp_path):
+    path = bundle(tmp_path)
+    monkeypatch.setenv("SSL_CERT_FILE", path)
+    runtime = Runtime()
+
+    runtime._with_tls_trust("")
+
+    assert runtime._ca_bundle is None
+
+
 def test_sip_ca_file_alone_is_enough_for_tls(no_ca_anywhere, monkeypatch, tmp_path):
     private = bundle(tmp_path)
     monkeypatch.setenv("SIP_CA_FILE", private)
@@ -174,6 +281,24 @@ def test_without_ca_certificates_tls_leaves_the_transports(no_ca_anywhere):
     text = runtime._with_tls_trust("net_interface 127.0.0.1\n")
 
     assert text == "net_interface 127.0.0.1\nsip_transports UDP,TCP\n"
+    assert not runtime.tls_available
+
+
+@pytest.mark.parametrize(
+    ("given", "left"),
+    [
+        ("sip_transports UDP,TCP,TLS\n", "sip_transports UDP,TCP\n"),
+        ("sip_transports tls\n", "sip_transports UDP\n"),
+        ("net_interface x\n  sip_transports\tTLS , udp,WSS,ws\n", "net_interface x\n  sip_transports\tudp,ws\n"),
+        ("sip_transports UDP\nsip_transports TLS\n", "sip_transports UDP\nsip_transports UDP\n"),
+    ],
+)  # fmt: skip
+def test_without_ca_certificates_a_transports_line_of_the_callers_loses_tls(
+    no_ca_anywhere, given, left
+):
+    runtime = Runtime()
+
+    assert runtime._with_tls_trust(given) == left
     assert not runtime.tls_available
 
 

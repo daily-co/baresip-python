@@ -46,6 +46,8 @@ _PORTS = itertools.count(15650)
             "1005\nUser-to-User=56a390f3d2b7310023a2%3Bencoding%3Dhex&X-Case=7",
         ),
         ("1005", {}, "1005"),
+        ("support@pbx.example", None, "support@pbx.example"),
+        ("tel:+15551234567", None, "tel:+15551234567"),
         (
             "sip:q@pbx.example",
             {"User-to-User": UUI},
@@ -82,6 +84,10 @@ def test_the_target_is_bracketed_and_carries_the_headers_escaped(uri, headers, t
         ("sip:q@pbx.example", {"X A": "1"}),
         ("sip:q@pbx.example", {"": "1"}),
         ("1005", {"Via": "x"}),
+        ("support@pbx.example", {"X-A": "1"}),
+        ("tel:+15551234567", {"X-A": "1"}),
+        ("pbx.example;transport=tls", {"X-A": "1"}),
+        ("support?X-B=2", {"X-A": "1"}),
         ("<sip:q@pbx.example", None),
     ],
 )
@@ -166,6 +172,27 @@ def test_what_is_built_parses_back():
 )  # fmt: skip
 def test_a_request_exposes_the_headers_attached_to_its_target(raw, headers):
     assert _parse_refer_to(raw).headers == headers
+
+
+@pytest.mark.parametrize(
+    "folded",
+    [
+        "<sip:q@h?X-Case=7>;\r\n method=INVITE",
+        "<sip:q@h?X-Case=7>\r\n\t;method=INVITE",
+        "<sip:q@h?X-Case=7>;\n X-Injected: 1",
+        "<sip:q@h?X-Case=7>\r\nX-Injected: 1",
+        "<sip:q@h?X-Case=7>\r",
+    ],
+)
+def test_a_folded_target_is_unfolded_onto_one_line(folded):
+    request = _parse_refer_to(folded)
+
+    assert "\r" not in request.raw and "\n" not in request.raw
+    assert request.target == "sip:q@h"
+    assert request.headers == {"X-Case": "7"}
+    # The accept command reads every line after the target as a header.
+    assert _carried_header_lines(request, None) == "\nX-Case: 7"
+    assert f"1 {request.raw}{_carried_header_lines(request, None)}".count("\n") == 1
 
 
 def request_with(headers: dict) -> TransferRequest:

@@ -945,8 +945,10 @@ static void offer_summary(const struct sip_msg *msg, char *buf, size_t size)
 
 /* Accept the INVITE, and say so when the stack refuses it instead: a
  * refused call is otherwise invisible to the application. The stack
- * refuses an offer it cannot answer with a 488, reports success, and
- * leaves no call behind. */
+ * refuses an offer it cannot answer with a 488, and a Replaces header
+ * that matches no call with a 481; either way it reports success and
+ * leaves no call behind. So does this shim while draining, on purpose,
+ * which is not worth a warning. */
 static void accept_or_explain(struct ua *ua, const struct sip_msg *msg)
 {
     char offer[200];
@@ -955,7 +957,13 @@ static void accept_or_explain(struct ua *ua, const struct sip_msg *msg)
     if (err) {
         warning("call from %r refused before the application saw it: %m\n", &msg->from.auri,
                 err);
-    } else if (!ua_find_call_msg(ua, msg)) {
+    } else if (g_drain || ua_find_call_msg(ua, msg)) {
+        return;
+    } else if (sip_msg_hdr(msg, SIP_HDR_REPLACES)) {
+        warning("call from %r refused before the application saw it: its Replaces header "
+                "names no call here\n",
+                &msg->from.auri);
+    } else {
         offer_summary(msg, offer, sizeof(offer));
         warning("call from %r refused before the application saw it: nothing in its offer "
                 "\"%s\" is acceptable to this account; check its media encryption and "

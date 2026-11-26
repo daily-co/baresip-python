@@ -64,6 +64,36 @@ _TO_PYTHON_LEVEL = {
 _DEFAULT_CONFIG = "# baresip-python defaults\n"
 # Configuration lines by which a caller takes TLS trust into their own hands.
 _TLS_TRUST_LINE = re.compile(r"^[ \t]*sip_(cafile|capath|verify_server)\b", re.MULTILINE)
+
+
+_TRANSPORTS_LINE = re.compile(r"^([ \t]*sip_transports[ \t]+)(.*)$", re.MULTILINE | re.IGNORECASE)
+
+
+def _without_tls_transports(text: str) -> str:
+    """``text`` with TLS and secure WebSocket taken out of the stack's transports.
+
+    The stack reads the first ``sip_transports`` line, so one the
+    configuration already carries is narrowed in place: appending
+    another would leave TLS on, and unverified.
+    """
+    if not _TRANSPORTS_LINE.search(text):
+        return text + "sip_transports UDP,TCP\n"
+
+    def narrowed(match: re.Match) -> str:
+        kept = [
+            name
+            for name in (part.strip() for part in match.group(2).split(","))
+            if name and name.lower() not in ("tls", "wss")
+        ]
+        return match.group(1) + ",".join(kept or ["UDP"])
+
+    return _TRANSPORTS_LINE.sub(narrowed, text)
+
+
+def _has_whitespace(path: str) -> bool:
+    return any(c.isspace() for c in path)
+
+
 # The line the stack logs when a server's certificate fails verification.
 _TLS_VERIFY_ERROR = "tls_verify_handler: error_string = "
 # How long such a line stays attributable to the failure that follows it.
@@ -192,16 +222,21 @@ class Runtime:
             config = config.render()
         # The parser rejects an empty buffer, so "no settings" still needs
         # something to parse.
-        self._config_text = self._with_tls_trust(config or _DEFAULT_CONFIG)
+        try:
+            self._config_text = self._with_tls_trust(config or _DEFAULT_CONFIG)
 
-        with Runtime._class_lock:
-            if Runtime._process_poisoned:
-                raise RuntimeDead("a runtime already died in this process; start a new process")
-            if Runtime._active is not None:
-                raise BaresipError("another Runtime is active; only one may run at a time")
-            if self._state != "new":
-                raise BaresipError(f"cannot start a runtime in state {self._state!r}")
-            Runtime._active = self
+            with Runtime._class_lock:
+                if Runtime._process_poisoned:
+                    raise RuntimeDead("a runtime already died in this process; start a new process")
+                if Runtime._active is not None:
+                    raise BaresipError("another Runtime is active; only one may run at a time")
+                if self._state != "new":
+                    raise BaresipError(f"cannot start a runtime in state {self._state!r}")
+                Runtime._active = self
+        except BaseException:
+            # Nothing has started that would later remove it.
+            self._discard_ca_bundle()
+            raise
 
         try:
             err = lib.bp_init()
@@ -346,25 +381,46 @@ class Runtime:
                 "no CA certificates found; TLS is disabled. Set SIP_CA_FILE to a CA "
                 "bundle, or install certifi."
             )
-            return text + "sip_transports UDP,TCP\n"
-        if extra is None:
-            directive, path = found
-            logger.info("verifying TLS servers against %s", path)
-            return text + f"{directive} {path}\n"
-        if found is None:
-            logger.info("verifying TLS servers against %s", extra)
-            return text + f"sip_cafile {extra}\n"
-        directive, path = found
-        logger.info("verifying TLS servers against %s and %s", path, extra)
-        if directive == "sip_capath":
-            return text + f"sip_cafile {extra}\nsip_capath {path}\n"
-        # The stack takes one CA file, so the two are joined into one.
+            return _without_tls_transports(text)
+        directive, path = found if found is not None else (None, None)
+        logger.info("verifying TLS servers against %s", " and ".join(p for p in (path, extra) if p))
+        files = [p for p in ((path if directive == "sip_cafile" else None), extra) if p]
+        directory = path if directive == "sip_capath" else None
+        # The stack reads one CA file, and reads a path only up to its
+        # first space. Two files, or a path with whitespace in it, are
+        # therefore gathered into one file of our own.
+        spaced = any(_has_whitespace(p) for p in (*files, directory) if p)
+        if len(files) < 2 and not spaced:
+            lines = [f"sip_cafile {files[0]}"] if files else []
+            if directory:
+                lines.append(f"sip_capath {directory}")
+            return text + "\n".join(lines) + "\n"
+        scanned: list[str] = []
+        if directory and _has_whitespace(directory):
+            scanned = sorted(entry.path for entry in os.scandir(directory) if entry.is_file())
+            directory = None
         fd, self._ca_bundle = tempfile.mkstemp(prefix="baresip-ca-", suffix=".pem")
         with os.fdopen(fd, "wb") as bundle:
-            for part in (path, extra):
+            seen: set[bytes] = set()
+            for part in (*files, *scanned):
                 with open(part, "rb") as source:
-                    bundle.write(source.read().rstrip() + b"\n")
-        return text + f"sip_cafile {self._ca_bundle}\n"
+                    content = source.read().rstrip()
+                # A certificate directory also holds what is not one, and
+                # names each certificate twice.
+                if part in scanned and (b"BEGIN CERTIFICATE" not in content or content in seen):
+                    continue
+                seen.add(content)
+                bundle.write(content + b"\n")
+        if _has_whitespace(self._ca_bundle):
+            raise BaresipError(
+                f"the temporary directory {tempfile.gettempdir()!r} has whitespace in its "
+                "path, which the SIP stack cannot read a CA file from; set TMPDIR to one "
+                "without"
+            )
+        lines = [f"sip_cafile {self._ca_bundle}"]
+        if directory:
+            lines.append(f"sip_capath {directory}")
+        return text + "\n".join(lines) + "\n"
 
     @property
     def tls_available(self) -> bool:
@@ -427,14 +483,18 @@ class Runtime:
                 logger.error("native log reader did not stop")
             self._log_thread = None
 
-    def _remove_conf_dir(self) -> None:
-        """Discard the stack's private directory, unless the stack is still
-        standing — a wedged SIP thread may still be reading from it."""
-        # The joined CA file is read once, when the stack starts.
+    def _discard_ca_bundle(self) -> None:
+        """Delete the temporary CA file this runtime made, if it made one."""
         if self._ca_bundle is not None:
             with contextlib.suppress(OSError):
                 os.unlink(self._ca_bundle)
             self._ca_bundle = None
+
+    def _remove_conf_dir(self) -> None:
+        """Discard the stack's private directory, unless the stack is still
+        standing — a wedged SIP thread may still be reading from it."""
+        # The gathered CA file is read once, when the stack starts.
+        self._discard_ca_bundle()
         if self._conf_dir is None:
             return
         if not self._stack_down.is_set() and self._thread is not None and self._thread.is_alive():
