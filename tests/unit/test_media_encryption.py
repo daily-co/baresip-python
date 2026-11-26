@@ -128,6 +128,15 @@ async def call_bot(loopback, offer: str | None, bot_setting: str = "none", bot_r
     return placed, received, failed
 
 
+async def final_stats(call):
+    """The call's closing statistics, once its end has been reported."""
+    for _ in range(300):
+        if call.final_stats is not None:
+            break
+        await asyncio.sleep(0.01)
+    return call.final_stats
+
+
 @pytest.mark.parametrize(
     ("offer", "bot_setting", "encrypted"),
     [
@@ -152,9 +161,8 @@ async def test_a_received_call_gets_the_encryption_its_offer_allows(
     assert received.media_encrypted is encrypted
     assert placed.media_encrypted is encrypted
     await placed.hangup()
-    await asyncio.sleep(0.2)
-    assert received.final_stats.rx_packets > 0
-    assert placed.final_stats.rx_packets > 0
+    assert (await final_stats(received)).rx_packets > 0
+    assert (await final_stats(placed)).rx_packets > 0
 
 
 async def test_requiring_srtp_refuses_an_unencrypted_call_before_the_application(loopback):
@@ -262,8 +270,8 @@ async def test_overlapping_calls_each_get_their_own_encryption(roomy_loopback):
     assert placed["secure"].media_encrypted and received["secure"].media_encrypted
     for call in placed.values():
         await call.hangup()
-    await asyncio.sleep(0.2)
-    assert all(call.final_stats.rx_packets > 0 for call in received.values())
+    for call in received.values():
+        assert (await final_stats(call)).rx_packets > 0
 
 
 async def test_a_video_call_is_encrypted_and_its_frames_arrive(roomy_loopback):
