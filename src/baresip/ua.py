@@ -300,28 +300,33 @@ class UserAgent:
         if self._runtime.draining:
             raise DrainingError("runtime is draining; new calls are refused")
         args = f"{self._handle} {self._VIDEO_DIRS[video]} {uri}{header_lines(headers)}"
-        ev, payload = await self._runtime.cmd(lib.BP_CMD_UA_CONNECT, args=args)
-        if ev == lib.BP_EV_STALE_HANDLE:
-            raise StaleHandleError("user agent no longer exists")
-        data = json.loads(payload)
-        if data.get("error") == "no_laddr":
-            host = data.get("host") or uri
-            raise NoLocalAddressError(
-                f"no local address toward {host}: no INVITE was sent. Loopback "
-                'targets need "net_interface 127.0.0.1" in the runtime '
-                "configuration (see examples/06_softphone.py)."
+        # The call's handle comes back in the answer to this command, and
+        # the far end can refuse the call before this coroutine runs again:
+        # collect what arrives meanwhile, for the Call built below.
+        with self._runtime._events_meanwhile() as missed:
+            ev, payload = await self._runtime.cmd(lib.BP_CMD_UA_CONNECT, args=args)
+            if ev == lib.BP_EV_STALE_HANDLE:
+                raise StaleHandleError("user agent no longer exists")
+            data = json.loads(payload)
+            if data.get("error") == "no_laddr":
+                host = data.get("host") or uri
+                raise NoLocalAddressError(
+                    f"no local address toward {host}: no INVITE was sent. Loopback "
+                    'targets need "net_interface 127.0.0.1" in the runtime '
+                    "configuration (see examples/06_softphone.py)."
+                )
+            if "error" in data:
+                errno = data.get("errno")
+                detail = os.strerror(errno) if errno else data["error"]
+                raise BaresipError(f"dial failed: {detail}")
+            return Call(
+                self._runtime,
+                handle=data["handle"],
+                ua_handle=self._handle,
+                state=CallState.OUTGOING,
+                peer=uri,
+                missed=missed,
             )
-        if "error" in data:
-            errno = data.get("errno")
-            detail = os.strerror(errno) if errno else data["error"]
-            raise BaresipError(f"dial failed: {detail}")
-        return Call(
-            self._runtime,
-            handle=data["handle"],
-            ua_handle=self._handle,
-            state=CallState.OUTGOING,
-            peer=uri,
-        )
 
     async def _explain_tls_failure(self, exc: RegistrationError) -> RegistrationError:
         """Name the certificate problem behind a TLS registration failure.
@@ -407,25 +412,28 @@ class UserAgent:
                 # is refused rather than guessed at.
                 await self._runtime.cmd(lib.BP_CMD_CALL_TRANSFER_REJECT, args=f"{event.call} 501")
                 return
-            ev, payload = await self._runtime.cmd(
-                lib.BP_CMD_CALL_TRANSFER_ACCEPT,
-                args=f"{event.call} {request.raw}{_carried_header_lines(request, None)}",
-            )
-            data = json.loads(payload) if payload else {}
-            if ev == lib.BP_EV_STALE_HANDLE or "error" in data:
-                logger.warning(
-                    "transfer policy could not execute the request: %s",
-                    data.get("error", "call gone"),
-                    extra={"call": event.call},
+            # As in dial(): the new call may end before it is built here.
+            with self._runtime._events_meanwhile() as missed:
+                ev, payload = await self._runtime.cmd(
+                    lib.BP_CMD_CALL_TRANSFER_ACCEPT,
+                    args=f"{event.call} {request.raw}{_carried_header_lines(request, None)}",
                 )
-                return
-            new_call = Call(
-                self._runtime,
-                handle=data["handle"],
-                ua_handle=self._handle,
-                state=CallState.OUTGOING,
-                peer=request.target,
-            )
+                data = json.loads(payload) if payload else {}
+                if ev == lib.BP_EV_STALE_HANDLE or "error" in data:
+                    logger.warning(
+                        "transfer policy could not execute the request: %s",
+                        data.get("error", "call gone"),
+                        extra={"call": event.call},
+                    )
+                    return
+                new_call = Call(
+                    self._runtime,
+                    handle=data["handle"],
+                    ua_handle=self._handle,
+                    state=CallState.OUTGOING,
+                    peer=request.target,
+                    missed=missed,
+                )
             logger.info("transfer request executed by policy", extra={"call": event.call})
             for callback in list(self._transfer_call_callbacks):
                 try:

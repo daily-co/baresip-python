@@ -92,6 +92,11 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 
 ### Fixed
 
+- A placed call that the far end refused straight away could report "not
+  established within N s" in place of the refusal's status. The refusal
+  could be delivered before `dial()` had built the call, and was dropped.
+  The same held for the call an accepted transfer places.
+
 - **An answered call is no longer renegotiated a moment after it is
   established.** A call answered without video was sent a re-INVITE, with the
   same media as the answer, 50 to 150 ms after the answer. It restarted the

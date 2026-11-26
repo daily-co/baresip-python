@@ -347,6 +347,7 @@ class Call:
         peer: str | None = None,
         call_id: str | None = None,
         headers: dict | None = None,
+        missed: list[StackEvent] | None = None,
     ):
         """Bind to a native call. Library-internal; see the class docstring.
 
@@ -358,6 +359,8 @@ class Call:
             peer: The far end's URI, when already known.
             call_id: The SIP Call-ID, when already known.
             headers: Allowlisted INVITE headers, for inbound calls.
+            missed: Stack events delivered since the command that created
+                the call was sent; the call takes the ones that are its own.
         """
         self._runtime = runtime
         self._handle = handle
@@ -385,6 +388,11 @@ class Call:
         self.call_id = call_id
         self.headers = dict(headers) if headers else {}
         runtime.subscribe(self._on_stack_event)
+        # Events delivered before this object existed, oldest first; the
+        # handler ignores those of other calls. A call that already ended
+        # is closed by the time the caller gets it.
+        for event in missed or ():
+            self._on_stack_event(event)
 
     @classmethod
     def _from_incoming(cls, runtime: Runtime, event: StackEvent) -> "Call":
@@ -1014,24 +1022,27 @@ class Call:
         if request is None:
             raise BaresipError("no transfer request is pending on this call")
         lines = _carried_header_lines(request, headers)
-        ev, payload = await self._runtime.cmd(
-            lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{self._handle} {request.raw}{lines}"
-        )
-        if ev == lib.BP_EV_STALE_HANDLE:
-            raise StaleHandleError("call no longer exists")
-        data = json.loads(payload)
-        if "error" in data:
-            errno = data.get("errno")
-            detail = os.strerror(errno) if errno else data["error"]
-            raise BaresipError(f"transfer accept failed: {detail}")
-        self._transfer_request = None
-        return Call(
-            self._runtime,
-            handle=data["handle"],
-            ua_handle=self._ua_handle,
-            state=CallState.OUTGOING,
-            peer=request.target,
-        )
+        # As in UserAgent.dial(): the new call may end before it is built here.
+        with self._runtime._events_meanwhile() as missed:
+            ev, payload = await self._runtime.cmd(
+                lib.BP_CMD_CALL_TRANSFER_ACCEPT, args=f"{self._handle} {request.raw}{lines}"
+            )
+            if ev == lib.BP_EV_STALE_HANDLE:
+                raise StaleHandleError("call no longer exists")
+            data = json.loads(payload)
+            if "error" in data:
+                errno = data.get("errno")
+                detail = os.strerror(errno) if errno else data["error"]
+                raise BaresipError(f"transfer accept failed: {detail}")
+            self._transfer_request = None
+            return Call(
+                self._runtime,
+                handle=data["handle"],
+                ua_handle=self._ua_handle,
+                state=CallState.OUTGOING,
+                peer=request.target,
+                missed=missed,
+            )
 
     async def reject_transfer(self, status: int = 603) -> None:
         """Refuse the pending transfer request; the call continues.
