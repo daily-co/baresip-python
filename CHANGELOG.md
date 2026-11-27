@@ -4,7 +4,38 @@ All notable changes to baresip-python are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project versions follow
 SemVer with the 0.x caveat (see the API stability policy in the README).
 
-## [0.7.0] - 2026-11-21
+## [0.7.0] - 2026-11-27
+
+### Upgrading from 0.6.1
+
+No call, account or configuration code has to change. What behaves differently
+on the wire, most likely to be noticed first:
+
+1. **TLS servers are now verified.** An account or dial target that uses TLS
+   fails where the server's certificate does not chain to a trusted CA or does
+   not name the host connected to.
+   - A server with a private or self-signed certificate: set `SIP_CA_FILE` to
+     its CA certificate.
+   - A server reached by IP address over TLS: its certificate has to carry
+     that address, or the server has to be reached by the name it does carry.
+   - A minimal container with no CA certificates: install `ca-certificates`
+     or `certifi`. Without any, TLS is switched off at start and a TLS account
+     raises `NoCaCertificatesError`.
+2. **Calls that were refused are now answered.** A received call that offers
+   SRTP, or an unencrypted call in the `RTP/AVPF` profile, used to be answered
+   `488` before the application saw it. It now reaches `on_incoming`.
+3. **A transfer carries context.** A call placed for a peer's transfer request
+   now carries the `User-to-User` and `X-` headers attached to the transfer
+   target, and `Call.transfer` sends its target in angle brackets.
+4. **A SIP INFO request is answered `200 OK`** where it was answered `488`.
+5. **A received call is no longer renegotiated right after it is answered.**
+   The far end saw a re-INVITE 50 to 150 ms after every answer, which
+   restarted the audio; it now sees none.
+6. **Audio differs slightly with the bundled stack's upgrade** (v4.10.0 to
+   v4.13.0): Opus conceals lost packets, and audio after a pause is no longer
+   heard late. See "Changed" below.
+
+What this release does not yet do is listed under "Known issues" below.
 
 ### Added
 
@@ -13,11 +44,18 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
   whose keys cannot be used for its audio (an unsupported cipher suite, a
   key of the wrong length).
   `Call.media_encrypted` reports whether a call's audio is encrypted.
+- `Call.hangup(headers=None)`: custom headers on the BYE that ends an answered
+  call, such as `User-to-User` or the `X-` headers a contact-center platform
+  reads to route the caller after the bot hangs up. On a received call not
+  yet answered they go on the rejection. With no arguments it behaves as
+  before.
 - `Call.reject(status=486, reason=None, headers=None)`: a refusal carries the
   status the application chooses (300-699), its standard reason phrase or
-  one supplied, and custom headers. `Call.hangup(headers=None)`: custom
-  headers on the BYE, or on the rejection of a call not yet answered. With no
-  arguments both behave as before.
+  one supplied, and custom headers. With no arguments it behaves as before.
+- `sips:` addresses: `dial("sips:...")` places the call over TLS, and a call
+  whose route or far-end contact is a `sips:` address completes. Until now no
+  request to such an address was sent, which broke calls through
+  sip.linphone.org and to OpenAI's SIP endpoint. See "Fixed".
 - `Call.transfer(uri, headers=None)`: context for the party a transfer calls,
   such as `User-to-User`, attached to the transfer target. A peer's transfer
   request exposes the context of its target as `TransferRequest.headers`, and
@@ -127,6 +165,51 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 - A hang-up that cannot be sent, or is sent and not delivered, is logged as
   a warning on `baresip.native`. It used to fail without a trace, leaving the
   far end in a call this side had left.
+
+### Known issues
+
+Calls and transports:
+
+- A call over UDP behind a NAT that drops idle bindings can lose its
+  signalling after about a minute without SIP traffic: the far end's hang-up
+  then never arrives. `Config.rtp_timeout` is 0 by default, so such a call
+  stays open until the application ends it. As in 0.6.1.
+- Inside a call over TLS, a request that needs a new connection is not sent
+  when the route gives a host name the server's certificate lacks, when the
+  call was dialled by IP address and the certificate lacks that address, or
+  when the call arrived on a connection the far end opened.
+- A TLS connection verified for one call is reused by another call going to
+  the same address and port, without that call's own check.
+- An offer for DTLS-SRTP is answered as unencrypted, and refused by an account
+  that requires SRTP. A default account ignores SRTP keys offered on the
+  `RTP/AVPF` profile and answers unencrypted.
+- Received video larger than `Config.video_size` is dropped, with a warning.
+
+Headers and callbacks:
+
+- With `rtp_stats yes` in `extra_config_text`, the stack puts its own
+  `X-RTP-Stat` header on a BYE in place of the headers given to `hangup()`.
+- `reject()` and `hangup()` accept a `Content-Length` header, which conflicts
+  with the one the message already carries.
+- A NUL character in a header attached to a peer's transfer target cuts the
+  headers of the call placed short, the application's own included.
+- Registering the same callback twice with `on_info`, `on_rtcp` or
+  `on_audio_warning` leaves one copy that the matching `off_` call does not
+  remove.
+
+TLS trust:
+
+- A malformed `sip_cafile`, `sip_capath` or `sip_verify_server` line in
+  `extra_config_text` (no value, or a longer name that begins the same way)
+  still switches off CA discovery, leaving TLS unverified.
+- A directory named by `SSL_CERT_DIR` counts as CA certificates when it holds
+  any file at all, and is then used in place of a real bundle.
+- After a `start()` that was refused, a later `start()` on the same runtime
+  keeps TLS marked unavailable even when CA certificates are now found.
+- When two TLS accounts fail within five seconds, the second error can name
+  the first one's certificate problem.
+- The Linux wheels bundle OpenSSL 1.1.1, which its project no longer
+  maintains.
 
 ## [0.6.1] - 2026-11-20
 
