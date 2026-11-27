@@ -347,3 +347,102 @@ async def test_srtp_without_tls_signalling_warns_once_per_agent(loopback, caplog
     warnings = [r.getMessage() for r in caplog.records if "SRTP keys" in r.getMessage()]
     assert len(warnings) == 1
     assert "transport='tls'" in warnings[0]
+
+
+# A key the stack can use, and offers whose keys it cannot use for the
+# audio. Each is the media part of an SDP, on the unencrypted profile.
+_KEY = "inline:MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkw"
+_AUDIO = "m=audio 40000 RTP/AVP 0\r\n"
+USABLE_KEYS = f"{_AUDIO}a=crypto:1 AES_CM_128_HMAC_SHA1_80 {_KEY}\r\n"
+UNUSABLE_KEYS = {
+    "an unsupported suite": f"{_AUDIO}a=crypto:1 F8_128_HMAC_SHA1_80 {_KEY}\r\n",
+    "a key of the wrong length": f"{_AUDIO}a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:MTIz\r\n",
+    "a key method other than inline": f"{_AUDIO}a=crypto:1 AES_CM_128_HMAC_SHA1_80 uri:x\r\n",
+    "keys on a disabled audio section only": (
+        f"{_AUDIO}m=audio 0 RTP/AVP 0\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 {_KEY}\r\n"
+    ),
+    "keys on the video section only": (
+        f"{_AUDIO}m=video 40002 RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\n"
+        f"a=crypto:1 AES_CM_128_HMAC_SHA1_80 {_KEY}\r\n"
+    ),
+}
+
+
+async def offer_by_hand(loopback, media: str, bot_setting: str):
+    """Send an INVITE with ``media`` to a bot; return (its call or None, the status answered).
+
+    The stack's own caller only offers keys it can use, so an offer with
+    others is written out and sent over a plain socket.
+    """
+    runtime, own = loopback
+    bot = await UserAgent.create(runtime, account("bot", own, media_encryption=bot_setting))
+    incoming: asyncio.Queue = asyncio.Queue()
+    bot.on_incoming(incoming.put_nowait)
+
+    loop = asyncio.get_running_loop()
+    replies: asyncio.Queue = asyncio.Queue()
+
+    class Caller(asyncio.DatagramProtocol):
+        def datagram_received(self, data, addr):
+            replies.put_nowait(data.decode(errors="replace"))
+
+    host, port = own.split(":")
+    transport, _ = await loop.create_datagram_endpoint(Caller, local_addr=("127.0.0.1", 0))
+    me = f"127.0.0.1:{transport.get_extra_info('sockname')[1]}"
+    sdp = f"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n{media}"
+    transport.sendto(
+        (
+            f"INVITE sip:bot@{own} SIP/2.0\r\nVia: SIP/2.0/UDP {me};branch=z9hG4bK{port}\r\n"
+            f"From: <sip:hand@{me}>;tag=hand\r\nTo: <sip:bot@{own}>\r\nCall-ID: hand-{port}\r\n"
+            f"CSeq: 1 INVITE\r\nContact: <sip:hand@{me}>\r\nMax-Forwards: 70\r\n"
+            f"Content-Type: application/sdp\r\nContent-Length: {len(sdp)}\r\n\r\n{sdp}"
+        ).encode(),
+        (host, int(port)),
+    )
+    try:
+        arrived = asyncio.create_task(incoming.get())
+        answered = asyncio.create_task(replies.get())
+        while True:
+            done, _ = await asyncio.wait(
+                {arrived, answered}, timeout=3, return_when=asyncio.FIRST_COMPLETED
+            )
+            if arrived in done:
+                answered.cancel()
+                return arrived.result(), 0
+            assert answered in done, "the bot neither rang nor answered"
+            status = int(answered.result().split(" ")[1])
+            if status >= 300:
+                arrived.cancel()
+                return None, status
+            answered = asyncio.create_task(replies.get())  # a provisional answer
+    finally:
+        transport.close()
+
+
+@pytest.mark.parametrize("offer", UNUSABLE_KEYS)
+async def test_requiring_srtp_refuses_keys_the_audio_cannot_use(loopback, offer):
+    received, status = await offer_by_hand(loopback, UNUSABLE_KEYS[offer], "srtp")
+
+    assert received is None
+    assert status == 488
+
+
+async def test_requiring_srtp_takes_usable_keys_on_an_unencrypted_line(loopback):
+    received, _status = await offer_by_hand(loopback, USABLE_KEYS, "srtp")
+
+    assert received is not None
+    await received.answer()
+    for _ in range(100):
+        if received.media_encrypted:
+            break
+        await asyncio.sleep(0.01)
+    assert received.media_encrypted
+
+
+async def test_without_the_requirement_unusable_keys_give_an_unencrypted_call(loopback):
+    received, _status = await offer_by_hand(loopback, UNUSABLE_KEYS["an unsupported suite"], "none")
+
+    assert received is not None
+    await received.answer()
+    await asyncio.sleep(0.2)
+    assert not received.media_encrypted

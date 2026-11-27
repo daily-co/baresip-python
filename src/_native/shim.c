@@ -875,25 +875,74 @@ static struct menc menc_feedback = {
     .sdp_proto = SDP_PROTO_AVPF,
 };
 
+/* Whether the stack can start SRTP from this "a=crypto:" value. The
+ * stack takes a key it cannot use with a warning and no error, and in
+ * its optional mode then carries the call unencrypted, so an account
+ * that requires SRTP has to know before the call is created. The checks
+ * are the ones the stack's srtp module makes (sdes_decode_crypto,
+ * cryptosuite_issupported, start_crypto): the same two patterns, the
+ * "inline" key method, a suite it supports, and a key of that suite's
+ * length. */
+static bool crypto_usable(const char *val, size_t len)
+{
+    static const struct {
+        const char *suite;
+        size_t keylen;
+    } suites[] = {
+        {"AES_CM_128_HMAC_SHA1_32", 16 + 14},
+        {"AES_CM_128_HMAC_SHA1_80", 16 + 14},
+        {"AEAD_AES_128_GCM", 16 + 12},
+        {"AEAD_AES_256_GCM", 32 + 12},
+    };
+    struct pl tag, suite, key_prms, method, key;
+    uint8_t buf[64];
+    size_t olen = sizeof(buf), i;
+
+    if (re_regex(val, len, "[0-9]+ [^ ]+ [^ \r]+", &tag, &suite, &key_prms))
+        return false;
+    if (re_regex(key_prms.p, key_prms.l, "[^:]+:[^|]+", &method, &key))
+        return false;
+    if (0 != pl_strcmp(&method, "inline"))
+        return false;
+    if (base64_decode(key.p, key.l, buf, &olen))
+        return false;
+    for (i = 0; i < RE_ARRAY_SIZE(suites); i++) {
+        if (0 == pl_strcasecmp(&suite, suites[i].suite))
+            return olen == suites[i].keylen;
+    }
+    return false;
+}
+
 /* The account mode that answers this offer in its own profile, or NULL
  * for the plain one. Of several audio sections an SRTP one is preferred.
+ *
+ * *usable, when given, says whether the offer's first enabled plain
+ * audio section carries a key the stack can use: what an account that
+ * requires SRTP needs before it takes keys on a plain line for SRTP.
  *
  * FIXME: a DTLS-SRTP offer (UDP/TLS/RTP/SAVP[F] with a fingerprint) is
  * not recognised here, so it is answered like an unencrypted one and
  * refused. The dtls_srtp module is loaded; mapping the offer to it
  * belongs with a "dtls" value for Account.media_encryption. */
-static const char *offer_mediaenc(const struct sip_msg *msg)
+static const char *offer_mediaenc(const struct sip_msg *msg, bool *usable)
 {
     const char *body = msg->mb ? (const char *)mbuf_buf(msg->mb) : NULL;
     size_t n = msg->mb ? mbuf_get_left(msg->mb) : 0;
     bool savp = false, savpf = false, avpf = false, keys = false;
+    /* 0 before the first enabled plain audio section, 1 inside it, 2 after */
+    int plain_audio = 0;
     size_t i = 0;
+
+    if (usable)
+        *usable = false;
 
     while (body && i < n) {
         const char *eol = memchr(&body[i], '\n', n - i);
         size_t len = eol ? (size_t)(eol - &body[i]) : n - i;
         struct pl port, proto;
 
+        if (len >= 2 && 0 == memcmp(&body[i], "m=", 2) && plain_audio == 1)
+            plain_audio = 2; /* the next section begins */
         if (0 == re_regex(&body[i], len, "m=audio [0-9]+ [^ \r]+", &port, &proto)) {
             if (pl_u32(&port) == 0)
                 ; /* a section the caller itself disabled */
@@ -903,8 +952,12 @@ static const char *offer_mediaenc(const struct sip_msg *msg)
                 savpf = true;
             else if (0 == pl_strcmp(&proto, SDP_PROTO_AVPF))
                 avpf = true;
+            else if (plain_audio == 0)
+                plain_audio = 1;
         } else if (len >= 9 && 0 == memcmp(&body[i], "a=crypto:", 9)) {
             keys = true;
+            if (usable && plain_audio == 1 && crypto_usable(&body[i + 9], len - 9))
+                *usable = true;
         }
         i += len + 1;
     }
@@ -977,7 +1030,8 @@ static void accept_incoming(const struct sip_msg *msg)
     struct ua *ua = uag_find_msg(msg);
     struct account *acc = ua_account(ua);
     const char *mode = account_mediaenc(acc);
-    const char *pick = offer_mediaenc(msg);
+    bool usable;
+    const char *pick = offer_mediaenc(msg, &usable);
     char rest[32];
 
     if (!ua) {
@@ -985,9 +1039,12 @@ static void accept_incoming(const struct sip_msg *msg)
         return;
     }
     /* An account that requires SRTP keeps its mode for an unencrypted
-     * offer, which the stack then refuses. */
+     * offer, which the stack then refuses. Keys on a plain line count as
+     * unencrypted unless the stack can use them for the audio: its
+     * optional mode would otherwise carry the call in the clear. */
     if (!pick || (mode && 0 != str_cmp(mode, MENC_SRTP)) ||
-        (mode && 0 == str_cmp(pick, MENC_FEEDBACK))) {
+        (mode && 0 == str_cmp(pick, MENC_FEEDBACK)) ||
+        (mode && 0 == str_cmp(pick, MENC_SRTP_OPTIONAL) && !usable)) {
         accept_or_explain(ua, msg);
         return;
     }

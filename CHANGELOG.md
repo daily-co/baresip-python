@@ -9,7 +9,9 @@ SemVer with the 0.x caveat (see the API stability policy in the README).
 ### Added
 
 - `Account(media_encryption="none" | "srtp")`: `"srtp"` encrypts every call
-  with SRTP (SDES keys) and refuses a received call that offers none.
+  with SRTP (SDES keys) and refuses a received call that offers none, or
+  whose keys cannot be used for its audio (an unsupported cipher suite, a
+  key of the wrong length).
   `Call.media_encrypted` reports whether a call's audio is encrypted.
 - `Call.reject(status=486, reason=None, headers=None)`: a refusal carries the
   status the application chooses (300-699), its standard reason phrase or
