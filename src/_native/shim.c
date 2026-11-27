@@ -1008,8 +1008,7 @@ static void accept_or_explain(struct ua *ua, const struct sip_msg *msg)
     int err = ua_accept(ua, msg);
 
     if (err) {
-        warning("call from %r refused before the application saw it: %m\n", &msg->from.auri,
-                err);
+        warning("call from %r refused before the application saw it: %m\n", &msg->from.auri, err);
     } else if (g_drain || ua_find_call_msg(ua, msg)) {
         return;
     } else if (sip_msg_hdr(msg, SIP_HDR_REPLACES)) {
@@ -1083,8 +1082,7 @@ static void bp_bevent_h(enum bevent_ev ev, struct bevent *event, void *arg)
     /* The stack refused an INVITE before a call existed for it; the text
      * is the status it answered with. */
     if (ev == BEVENT_SIPSESS_FAILED && msg && text)
-        warning("call from %r refused before the application saw it: %s%s\n", &msg->from.auri,
-                text,
+        warning("call from %r refused before the application saw it: %s%s\n", &msg->from.auri, text,
                 0 == strncmp(text, "486 Max Calls", 13)
                     ? " (the limit is Config.max_concurrent_calls)"
                     : "");
