@@ -109,8 +109,8 @@
  * sipfrags. ACCEPT args: "HANDLE RAW_REFER_TO[\nName: value...]" — dials
  * the target with the xcall linkage so the core ties the original
  * leg's fate to the new call, which carries the header lines given;
- * DONE payload {"handle":N} names the new call. REJECT args: "HANDLE STATUS" — sends the final failing sipfrag
- * (out-of-range statuses fall back to 603) and the call continues. */
+ * DONE payload {"handle":N} names the new call. REJECT args: "HANDLE STATUS" — sends the final
+ * failing sipfrag (out-of-range statuses fall back to 603) and the call continues. */
 #define BP_CMD_CALL_TRANSFER_ACCEPT 17
 #define BP_CMD_CALL_TRANSFER_REJECT 18
 
